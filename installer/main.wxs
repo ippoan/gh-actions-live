@@ -1,23 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  perMachine MSI (インストール時に UAC 昇格が要る)。やることは 2 つ:
+  1 パッケージで perUser / perMachine の両対応 (Scope="perUserOrMachine")。
 
-    1. Chrome の ExtensionSettings ポリシーを HKLM に書いて拡張を force_installed にする
-    2. 拡張一式を Program Files にも置く (ポリシー経路が使えないときの手動読み込み用)
+    既定 (admin 不要):  msiexec /i gh-actions-live-x.y.z-x64.msi
+      - 拡張一式を %LOCALAPPDATA%\Programs\gh-actions-live\extension に置く
+        (per-user context では ProgramFiles64Folder がそこへリダイレクトされる)
+      - update.ps1 をタスク スケジューラに登録 (ログオン時 + 1 時間ごと、ユーザー権限)。
+        GitHub Release に新版があれば extension\ を上書きし、拡張が自分でリロードする
+      - Chrome への初回読み込みだけ手動: chrome://extensions → デベロッパーモード →
+        「パッケージ化されていない拡張機能を読み込む」→ 上のフォルダ
+        (非管理 Windows では Chrome が Web Store 外の force_installed を捨てるため。Refs #9)
 
-  **なぜ perMachine か**: Windows は `HKCU\Software\Policies` に ACL をかけており、
-  ユーザー権限では書き込めない (ユーザーが自分にポリシーを適用できないようにするため)。
-  perUser MSI だと install 時に
-  「値 installation_mode をキー ...\ExtensionSettings\<id> に書き込めません」で失敗する。
-  ポリシーを使う以上 HKLM しか選択肢が無い。
+    管理端末向け (UAC 昇格):  msiexec /i gh-actions-live-x.y.z-x64.msi ALLUSERS=1 [ENROLLMENTTOKEN=...]
+      - C:\Program Files\gh-actions-live に置く
+      - HKLM に ExtensionSettings (force_installed) を書く。AD / Entra / Chrome Enterprise Core
+        登録済み端末ならこれだけで Chrome に入り、自動更新も Chrome 側で効く
+      - ENROLLMENTTOKEN を渡せば Chrome Enterprise Core に登録する
 
-  非管理端末では ExtensionSettings が効かない (Chrome の仕様、Refs #9)。
-  ENROLLMENTTOKEN を渡すと Chrome Enterprise Core に登録し、効くようになる。
-
-  ポリシー反映には Chrome の再起動が要る。
-  副作用: Chrome に「組織によって管理されています」が出る。force_installed の拡張は
-  ユーザーが Chrome から削除できない (アンインストールは MSI から。ForceDeleteOnUninstall
-  でポリシーキーも消える)。
+  HKCU\Software\Policies はユーザー権限で書けないので、ポリシー系 component は
+  ALLUSERS=1 のときだけ出す。
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -25,7 +26,7 @@
       Manufacturer="ippoan"
       Version="$(var.Version)"
       UpgradeCode="63AA7341-F629-4E7E-AC1D-CEDB0D51C6F5"
-      Scope="perMachine"
+      Scope="perUserOrMachine"
       Compressed="yes">
 
     <MajorUpgrade DowngradeErrorMessage="より新しいバージョンが既にインストールされています。" />
@@ -41,26 +42,41 @@
       <Files Include="..\extension\**" />
     </ComponentGroup>
 
+    <ComponentGroup Id="UpdaterFiles" Directory="INSTALLFOLDER">
+      <Component>
+        <!-- File/@Source の相対パスは wix build の cwd 基準 (Files/@Include と違う)。wxs の場所に固定する -->
+        <File Source="$(sys.SOURCEFILEDIR)update.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
     <!--
-      Chrome ポリシーによる強制インストール。
+      自動更新タスクの登録 / 解除。Impersonate=yes で「インストールしたユーザー」として
+      schtasks に登録する (ユーザー権限で済む)。
+      - install: NOT Installed
+      - uninstall: REMOVE="ALL" で、upgrade の旧版削除 (UPGRADINGPRODUCTCODE) のときは走らせない
+        (新版の Register が直後に上書き登録するので)
+      ExeCommand の [INSTALLFOLDER] は deferred でもスクリプト書き出し時に解決される。
+    -->
+    <CustomAction Id="RegisterUpdater" Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]update.ps1&quot; -Register"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="UnregisterUpdater" Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]update.ps1&quot; -Unregister"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="UnregisterUpdater" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RegisterUpdater" After="InstallFiles" Condition="NOT Installed" />
+    </InstallExecuteSequence>
 
-      **書式が重要**: ExtensionSettings は dictionary policy で、Windows では
-      `Chrome` キー直下の **単一 REG_SZ に JSON を丸ごと**入れる形でしか読まれない。
-      拡張 ID のサブキー + 個別値として書くと、レジストリには入るが Chrome は
-      完全に無視する (chrome://policy に一切出ない)。実機で確認済み。
-
-      ExtensionInstallForcelist (1 から連番の list policy) を使えば衝突しない書き方も
-      できるが、他製品が "1" を使っていると壊れるため採らない。単一値である以上、
-      他製品が同じ ExtensionSettings を使っていれば上書きになる点は許容する。
-
-      Bitness="always64": 32bit component だと 64bit Windows で
-      HKLM\Software\WOW6432Node\Policies\... に落ちて 64bit Chrome が読まない。
-
-      アンインストール時はこの値だけが消える。Chrome キー自体は他ポリシーが
-      同居しうるので ForceDeleteOnUninstall は付けない。
+    <!--
+      Chrome ポリシー (ALLUSERS=1 のときだけ)。
+      ExtensionSettings は `Chrome` キー直下の **単一 REG_SZ に JSON を丸ごと** 入れる形でしか
+      読まれない (サブキー形式はレジストリに入るが Chrome が無視する。実機で確認済み)。
+      Bitness="always64": 無いと WOW6432Node に落ちて 64bit Chrome が読まない。
+      Chrome キーには他ポリシーが同居しうるので ForceDeleteOnUninstall は付けない。
     -->
     <ComponentGroup Id="ChromePolicy" Directory="INSTALLFOLDER">
-      <Component Bitness="always64">
+      <Component Bitness="always64" Condition="ALLUSERS=1">
         <RegistryValue Root="HKLM"
                        Key="Software\Policies\Google\Chrome"
                        Name="ExtensionSettings"
@@ -71,26 +87,13 @@
     </ComponentGroup>
 
     <!--
-      Chrome Enterprise Core (旧 CBCM) への登録 (Refs #9)。
-      非管理 Windows (Home / WORKGROUP / Entra 非参加) では、Chrome は Web Store 外の
-      force_installed を黙って捨てる (公式仕様)。端末を Chrome Enterprise Core に
-      登録すると、上の ExtensionSettings がそのまま効き始める。
-
-      token は **インストール時に public property で渡す**:
-        msiexec /i gh-actions-live-x.y.z-x64.msi ENROLLMENTTOKEN=<token>
-      渡さなければこの component は出ない (= 今までどおり何もしない)。
-      MSI に焼き込まない理由: この repo も Release 資産も public なので、焼き込むと
-      「端末を組織管理下に入れる資格情報」が誰でも落とせる MSI に平文で入る。
-
-      Secure="yes" が要る。無いとコマンドラインの property が昇格後の
-      execute sequence に渡らず、条件が常に偽になる。
-
-      token は Chrome が一度読んで enroll すればその後は不要 (DM token は別の場所に
-      保存される)。upgrade 時に渡さなくても既に enroll 済みなら影響しない。
+      Chrome Enterprise Core への登録 (Refs #9)。ALLUSERS=1 かつ ENROLLMENTTOKEN を渡したときだけ。
+      token は MSI に焼き込まない (repo も Release も public なので)。Secure="yes" が無いと
+      コマンドラインの property が昇格後の execute sequence に渡らず条件が常に偽になる。
     -->
     <Property Id="ENROLLMENTTOKEN" Secure="yes" />
     <ComponentGroup Id="ChromeEnrollment" Directory="INSTALLFOLDER">
-      <Component Bitness="always64" Condition="ENROLLMENTTOKEN">
+      <Component Bitness="always64" Condition="ALLUSERS=1 AND ENROLLMENTTOKEN">
         <RegistryValue Root="HKLM"
                        Key="Software\Policies\Google\Chrome"
                        Name="CloudManagementEnrollmentToken"
@@ -102,6 +105,7 @@
 
     <Feature Id="Main" Title="GitHub Actions Live">
       <ComponentGroupRef Id="ExtensionFiles" />
+      <ComponentGroupRef Id="UpdaterFiles" />
       <ComponentGroupRef Id="ChromePolicy" />
       <ComponentGroupRef Id="ChromeEnrollment" />
     </Feature>
