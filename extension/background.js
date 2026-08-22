@@ -30,24 +30,73 @@ async function openDashboard({ mode = 'popup' } = {}) {
   return (await chrome.windows.create(opts)).id;
 }
 
-// ---- alive.github.com への WebSocket の Origin を書き換える ----
-// 拡張ページから張る WebSocket の Origin は chrome-extension://<id> になり、
-// alive.github.com はこれを弾く (握手直後に 1006 で落ちる。github.com のタブからは繋がる)。
-// declarativeNetRequest で握手リクエストの Origin を https://github.com に差し替える。
-// session rule なので再起動のたびに入れ直す。
-async function installAliveOriginRule() {
-  try {
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [1],
-      addRules: [{
-        id: 1, priority: 1,
-        action: { type: 'modifyHeaders', requestHeaders: [{ header: 'Origin', operation: 'set', value: 'https://github.com' }] },
-        condition: { urlFilter: '||alive.github.com/', resourceTypes: ['websocket'] }
-      }]
-    });
-  } catch (e) { console.warn('[bg] DNR rule failed', e); }
+// ---- alive socket を持つ github.com タブの管理 ----
+// 拡張ページから張ると Origin が chrome-extension:// になり alive に 1006 で切られる。
+// github.com のタブ (content script alive-relay.js) から張れば Origin は https://github.com。
+// ダッシュボードから socket URL と購読トークンを受け取り、そのタブへ中継する。
+let aliveTabId = null;
+let aliveCfg = null;          // { url, tokens }
+let aliveState = { state: 'idle' };
+
+async function findGithubTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://github.com/*' });
+  // content script が入っているタブを優先 (ping が返るもの)
+  for (const t of tabs) {
+    try {
+      const r = await chrome.tabs.sendMessage(t.id, { target: 'alive-relay', type: 'ping' });
+      if (r?.ok) return t.id;
+    } catch { /* content script 未注入 */ }
+  }
+  return tabs[0]?.id ?? null;
 }
-installAliveOriginRule();
+
+// socket を持たせる github.com のタブを用意する。無ければ「監視対象 repo の Actions ページ」を
+// pinned タブで開く (元々「Actions ページを開く」前提の設計。ユーザーの操作を邪魔しないよう
+// pinned + 非アクティブ)。
+async function ensureAliveTab() {
+  if (aliveTabId != null) {
+    try {
+      const r = await chrome.tabs.sendMessage(aliveTabId, { target: 'alive-relay', type: 'ping' });
+      if (r?.ok) return aliveTabId;
+    } catch { aliveTabId = null; }
+  }
+  let id = await findGithubTab();
+  if (id == null) {
+    const { repos = [] } = await chrome.storage.local.get('repos');
+    const url = repos.length ? `https://github.com/${repos[0]}/actions` : 'https://github.com/';
+    const tab = await chrome.tabs.create({ url, pinned: true, active: false });
+    id = tab.id;
+    await new Promise(res => {                       // content script の注入を待つ
+      const done = (tid, info) => { if (tid === id && info.status === 'complete') { chrome.tabs.onUpdated.removeListener(done); res(); } };
+      chrome.tabs.onUpdated.addListener(done);
+      setTimeout(() => { chrome.tabs.onUpdated.removeListener(done); res(); }, 15000);
+    });
+  } else {
+    // 既存タブに content script が無ければ入れる (拡張の更新直後など)
+    try { await chrome.scripting.executeScript({ target: { tabId: id }, files: ['alive-relay.js'] }); } catch {}
+  }
+  aliveTabId = id;
+  return id;
+}
+
+async function aliveConnect(cfg) {
+  if (cfg) aliveCfg = cfg;
+  if (!aliveCfg?.url) return { ok: false, error: 'no socket url' };
+  const id = await ensureAliveTab();
+  if (id == null) return { ok: false, error: 'no github tab' };
+  try {
+    await chrome.tabs.sendMessage(id, { target: 'alive-relay', type: 'connect', url: aliveCfg.url, tokens: aliveCfg.tokens });
+    return { ok: true, tabId: id };
+  } catch (e) {
+    aliveTabId = null;
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+chrome.tabs.onRemoved.addListener(id => { if (id === aliveTabId) { aliveTabId = null; aliveState = { state: 'tab-closed' }; } });
+
+// content script からのイベントをダッシュボードへ中継する
+function relayToDashboard(msg) { chrome.runtime.sendMessage({ target: 'dashboard', ...msg }).catch(() => {}); }
 
 // ---- Linux 側リレー ----
 const bridge = createBridge({
@@ -127,7 +176,6 @@ async function checkDiskVersion() {
 }
 
 chrome.runtime.onInstalled.addListener(async (d) => {
-  await installAliveOriginRule();
   chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 });
   chrome.alarms.create('self-update-check', { periodInMinutes: 10 });
   await applySeedConfig((...a) => console.log('[bg]', ...a));
@@ -136,7 +184,7 @@ chrome.runtime.onInstalled.addListener(async (d) => {
   const { reopenDashboard } = await chrome.storage.local.get('reopenDashboard');
   if (reopenDashboard) { await chrome.storage.local.remove('reopenDashboard'); openDashboard({ mode: 'popup' }); }
 });
-chrome.runtime.onStartup.addListener(async () => { await installAliveOriginRule(); await applySeedConfig(); bridge.ensure(); checkDiskVersion(); });
+chrome.runtime.onStartup.addListener(async () => { await applySeedConfig(); bridge.ensure(); checkDiskVersion(); });
 chrome.alarms.onAlarm.addListener(async a => {
   if (a.name === 'bridge-keepalive') bridge.ensure();
   if (a.name === 'self-update-check') { await applySeedConfig(); checkDiskVersion(); }
@@ -148,8 +196,24 @@ bridge.ensure();
 // default_popup を置いていないので onClicked が発火する
 chrome.action.onClicked.addListener(() => openDashboard({ mode: 'popup' }));
 
-chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.target !== 'background') return;
+
+  // content script (alive-relay) から
+  if (msg.type === 'alive-ready') {
+    if (sender.tab?.id != null && aliveTabId == null) aliveTabId = sender.tab.id;
+    if (aliveCfg?.url) aliveConnect(null);
+    return;
+  }
+  if (msg.type === 'alive-status')  { aliveState = { ...msg, at: new Date().toISOString() }; relayToDashboard(msg); return; }
+  if (msg.type === 'alive-message') { relayToDashboard(msg); return; }
+
+  // ダッシュボードから: socket URL とトークンを渡して接続させる
+  if (msg.type === 'alive-connect') {
+    aliveConnect({ url: msg.url, tokens: msg.tokens }).then(sendResponse);
+    return true;
+  }
+  if (msg.type === 'alive-state') { sendResponse({ ok: true, tabId: aliveTabId, ...aliveState }); return true; }
 
   if (msg.type === 'open-dashboard') {
     openDashboard({ mode: msg.mode }).then(id => sendResponse({ ok: true, windowId: id }));
