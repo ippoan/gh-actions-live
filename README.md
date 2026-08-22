@@ -148,7 +148,7 @@ manifest の version は tag から stamp されるので、repo に入ってい
 ```
 extension/          MV3 拡張本体 (これを Chrome に読み込む)
 installer/main.wxs  perUser MSI (WiX v4+)。拡張の配置 + Chrome ポリシー書き込み
-bridge/             拡張から外へイベントを出すための最小 WS サーバー (依存なし・任意)
+bridge/             Claude Code (Linux) 側のリレー。依存なし (下記)
 ```
 
 ## 既知の制約
@@ -159,3 +159,24 @@ bridge/             拡張から外へイベントを出すための最小 WS �
   形が分かったら `ws.onmessage` を絞り込める。
 - `data-channel` のトークンは発行時刻 `t` 入りの時限。20 分ごとにページを取り直して更新する。
 - **未文書の内部プロトコル**なので、GitHub 側の変更で黙って壊れうる。
+
+## Claude Code への途中通知 (bridge)
+
+拡張は GitHub を見ているだけなので、そのままでは Claude Code (別マシン) に何も届かない。
+`bridge/ws-bridge.mjs` を Claude Code 側で動かし、拡張からそこへ **outbound** で WebSocket を
+張ると双方向になる。
+
+```
+Windows Chrome 拡張  ──ws://<linux>:8799──▶  ws-bridge.mjs  ──stdout──▶  Claude Code (Monitor)
+        ▲                                          │
+        └──────── {"type":"command",...} ◀─────────┘  POST /cmd  /  stdin  /  ?role=listener
+```
+
+- 拡張 → Linux: run の状態変化を 1 行ずつ stdout に出す。Claude Code の `Monitor` ツールが
+  それを通知に変える (`Monitor({command: "node bridge/ws-bridge.mjs 8799", persistent: true})`)
+- Linux → 拡張: `curl -X POST localhost:8799/cmd -d '{"command":"open-dashboard","mode":"popup"}'`
+  でウィンドウを遠隔で開ける。`refresh` / `snapshot` も受ける
+- 拡張側は **設定画面の「Linux 側リレーの URL」** に `ws://<host>:8799` を入れる
+- service worker も 1 本張っていて、ダッシュボードが閉じていても `open-dashboard` を受けられる
+  (リレーの 20 秒 ping → pong の往来で MV3 の service worker が生き続ける)
+- 認証は無い。tailnet / LAN 内で使う前提。外に出すなら前段に Access 等を置く

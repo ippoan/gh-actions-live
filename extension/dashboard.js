@@ -6,6 +6,8 @@
 //   5. repo ごとの列 + run カードで描画
 // ページが持つ run は畳まれていないので、同一 repo で並列に走る run が全部並ぶ。
 
+import { createBridge } from './bridge-client.js';
+
 const GH = 'https://github.com';
 const parser = new DOMParser();
 const $ = id => document.getElementById(id);
@@ -20,6 +22,7 @@ const state = {
   pending: new Map(),
   connected: false,
   socketNote: '',
+  bridgeStatus: 'off', bridgeNote: '',
   lastLoadAt: null,
   // 初回スナップショットを取り終えた repo。ここに入るまで通知を出さない
   // (取り終える前は全 run が「初めて見た」= 新規扱いになり全件通知になる)
@@ -81,7 +84,8 @@ function apply(repo, r) {
   const prev = state.runs.get(key);
   state.runs.set(key, { repo, ...r, seenAt: new Date().toISOString() });
   if (prev && prev.status === r.status) return null;
-  return { repo, from: prev?.status, label: r.status, workflow: r.workflow, run: r.run, branch: r.ref };
+  return { repo, from: prev?.status, label: r.status, workflow: r.workflow, run: r.run,
+           ref: r.ref, title: r.title, href: r.href, runId: r.runId, by: r.by, t: new Date().toISOString() };
 }
 
 // Actions ページ = スナップショット。全 run が畳まれずに入っている。
@@ -139,6 +143,7 @@ function debounce(key, fn, ms = 700) {
 async function announce(events) {
   if (!events.length) return;
   render();
+  bridge.send({ type: 'events', events });
   const { notify = false } = await chrome.storage.local.get('notify');   // 既定オフ
   const worth = events.filter(e =>
     /fail|cancel|timed|error|action required/i.test(e.label) ||
@@ -242,6 +247,43 @@ function render() {
   $('grid').innerHTML = html || '<div class="empty">設定で repo を追加してください。</div>';
 }
 
+/* ---------------- Linux 側リレー ---------------- */
+
+const snapshot = () => [...state.runs.values()].map(r => ({
+  repo: r.repo, workflow: r.workflow, run: r.run, status: r.status, ref: r.ref,
+  title: r.title, href: r.href, runId: r.runId, by: r.by, at: r.at
+}));
+
+const bridge = createBridge({
+  role: 'extension',
+  getUrl: async () => (await chrome.storage.local.get('bridgeUrl')).bridgeUrl || '',
+  log,
+  onStatus: (st, note) => {
+    state.bridgeStatus = st; state.bridgeNote = note || '';
+    const el = $('bridge');
+    if (el) {
+      el.textContent = 'bridge: ' + ({ open: '接続中', connecting: '接続中…', closed: '切断', error: 'エラー', off: '未設定' }[st] || st);
+      el.style.color = st === 'open' ? 'var(--ok)' : (st === 'off' ? 'var(--dim)' : 'var(--bad)');
+    }
+    if (st === 'open') {
+      bridge.send({ type: 'hello', role: 'extension', repos: state.repos, version: chrome.runtime.getManifest().version });
+      bridge.send({ type: 'snapshot', runs: snapshot() });
+    }
+  },
+  onCommand: (msg) => {
+    switch (msg.command) {
+      case 'refresh':  boot(); break;
+      case 'snapshot': bridge.send({ type: 'snapshot', runs: snapshot() }); break;
+      case 'open-dashboard':
+        // 自分が開いている = もう開いている。前面に出すだけ background に頼む
+        chrome.runtime.sendMessage({ target: 'background', type: 'open-dashboard', mode: msg.mode }).catch(() => {});
+        break;
+      default: log('unknown command', msg.command);
+    }
+  }
+});
+chrome.storage.onChanged.addListener(c => { if (c.bridgeUrl) bridge.connect(); });
+
 /* ---------------- 起動 ---------------- */
 
 async function boot() {
@@ -255,6 +297,7 @@ async function boot() {
   }
   render();
   connect();
+  bridge.ensure();
 }
 
 $('opts').addEventListener('click', () => chrome.runtime.openOptionsPage());
