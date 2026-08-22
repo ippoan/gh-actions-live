@@ -284,6 +284,23 @@ const bridge = createBridge({
 });
 chrome.storage.onChanged.addListener(c => { if (c.bridgeUrl) bridge.connect(); });
 
+/* ---------------- 版の表示 (自動更新は update.ps1 + background が行う) ---------------- */
+
+async function checkLatest() {
+  const running = chrome.runtime.getManifest().version;
+  const el = $('ver');
+  try {
+    const r = await fetch('https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml', { cache: 'no-store' });
+    const xml = new DOMParser().parseFromString(await r.text(), 'text/xml');
+    const latest = xml.querySelector('updatecheck')?.getAttribute('version');
+    const cmp = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i]||0) !== (y[i]||0)) return (x[i]||0) - (y[i]||0); } return 0; };
+    if (latest && cmp(latest, running) > 0) {
+      el.textContent = `v${running} → v${latest} あり`; el.style.color = 'var(--run)';
+      el.title = '新版が Release に出ています。自動更新タスク (update.ps1) が 1 時間以内に差し替え、拡張が自分でリロードします。手動読み込みの場合は zip を展開し直してください。';
+    } else { el.textContent = `v${running}`; el.style.color = 'var(--dim)'; }
+  } catch { el.textContent = `v${running}`; }
+}
+
 /* ---------------- 起動 ---------------- */
 
 async function boot() {
@@ -305,5 +322,7 @@ $('reload').addEventListener('click', () => boot());
 chrome.storage.onChanged.addListener((c) => { if (c.repos) boot(); });
 
 boot();
+checkLatest();
+setInterval(checkLatest, 30 * 60000);
 setInterval(render, 5000);                 // 相対時刻の更新
 setInterval(() => { boot(); }, 20 * 60000); // 署名トークンは時限なので定期的に取り直す

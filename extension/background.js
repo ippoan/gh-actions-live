@@ -39,13 +39,42 @@ const bridge = createBridge({
       const id = await openDashboard({ mode: msg.mode || 'popup' });
       bridge.send({ type: 'ack', command: 'open-dashboard', windowId: id });
     }
+    if (msg.command === 'check-update') checkDiskVersion();
     // refresh / snapshot はダッシュボード側が処理する (run の状態はそちらにしか無い)
   }
 });
 
-chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 }); bridge.ensure(); });
-chrome.runtime.onStartup.addListener(() => bridge.ensure());
-chrome.alarms.onAlarm.addListener(a => { if (a.name === 'bridge-keepalive') bridge.ensure(); });
+// ---- 自動更新 (ディスク側は installer/update.ps1 が書き換える) ----
+// unpacked 拡張は chrome.runtime.getURL('manifest.json') でディスク上の manifest が読める。
+// 動いている版 (getManifest) と違えば update.ps1 が差し替えた後なので、自分をリロードする。
+// ダッシュボードを開いていたらリロード後に開き直す (reload で拡張ページは一度落ちる)。
+async function checkDiskVersion() {
+  try {
+    const r = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' });
+    const onDisk = (await r.json()).version;
+    const running = chrome.runtime.getManifest().version;
+    if (!onDisk || onDisk === running) return;
+    console.log('[bg] on-disk version', onDisk, '!= running', running, '-> reload');
+    const dash = await chrome.tabs.query({ url: chrome.runtime.getURL(DASH) });
+    await chrome.storage.local.set({ reopenDashboard: dash.length > 0, lastSelfUpdate: `${running} -> ${onDisk}` });
+    chrome.runtime.reload();
+  } catch (e) { console.warn('[bg] checkDiskVersion', e); }
+}
+
+chrome.runtime.onInstalled.addListener(async (d) => {
+  chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 });
+  chrome.alarms.create('self-update-check', { periodInMinutes: 10 });
+  bridge.ensure();
+  if (d.reason === 'update') {
+    const { reopenDashboard } = await chrome.storage.local.get('reopenDashboard');
+    if (reopenDashboard) { await chrome.storage.local.remove('reopenDashboard'); openDashboard({ mode: 'popup' }); }
+  }
+});
+chrome.runtime.onStartup.addListener(() => { bridge.ensure(); checkDiskVersion(); });
+chrome.alarms.onAlarm.addListener(a => {
+  if (a.name === 'bridge-keepalive') bridge.ensure();
+  if (a.name === 'self-update-check') checkDiskVersion();
+});
 chrome.storage.onChanged.addListener(c => { if (c.bridgeUrl) bridge.connect(); });
 bridge.ensure();
 

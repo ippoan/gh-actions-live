@@ -177,6 +177,9 @@ jobs:
           $zip = "gh-actions-live-extension-$env:TAG.zip"
           Compress-Archive -Path "extension/*" -DestinationPath $zip -Force
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+          # 固定名のコピーも置く。update.ps1 (自動更新) と README のリンクが
+          # releases/latest/download/gh-actions-live-extension.zip で取れるように。
+          Copy-Item $zip "dist/gh-actions-live-extension.zip"
           Move-Item $zip dist/
           Move-Item *.msi dist/
           Move-Item gh-actions-live.crx dist/

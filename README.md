@@ -74,85 +74,61 @@ chrome.windows.create({ url, type: 'popup',  state: 'fullscreen' })      // 全�
 
 ## インストール
 
-### まず前提を確認する (重要)
+MSI は 1 つで、**既定は perUser (admin 不要)**。管理端末向けの機能は `ALLUSERS=1` を付けたときだけ出る。
 
-MSI の「実行するだけで Chrome に入る」は **管理端末でしか成り立たない**。
-Chrome の公式仕様で、Windows では Chrome Web Store **外** の拡張を `force_installed` できるのは
+| 端末 | コマンド | 何が起きるか |
+|---|---|---|
+| 非管理 (Windows Home / WORKGROUP / 個人 PC) — **こちらが既定** | `msiexec /i gh-actions-live-x.y.z-x64.msi` (ダブルクリックでも同じ) | `%LOCALAPPDATA%\Programs\gh-actions-live\extension` に配置 + **自動更新タスク**を登録。Chrome への初回読み込みだけ手動 |
+| 管理端末 (AD / Entra / Chrome Enterprise Core 登録済み) | `msiexec /i gh-actions-live-x.y.z-x64.msi ALLUSERS=1` (UAC 昇格) | `C:\Program Files\gh-actions-live` に配置 + HKLM に `ExtensionSettings` (force_installed)。Chrome 再起動だけで入り、更新も Chrome が拾う |
+| 非管理端末を Chrome Enterprise Core に登録したい | `… ALLUSERS=1 ENROLLMENTTOKEN=<token>` | 上に加えて `CloudManagementEnrollmentToken` を書く。token は Google Admin で発行 |
 
-- Active Directory ドメイン参加、または
-- Microsoft Entra ID (旧 Azure AD) 参加、または
-- Chrome Enterprise Core (旧 CBCM) に登録済み
+なぜ分かれるか: Chrome の公式仕様で、Windows では Web Store **外** の拡張を `force_installed` できるのは
+管理端末だけ。非管理端末ではレジストリに正しく書けていても Chrome が黙って捨てる
+(`chrome://policy` に `[BLOCKED]` + 警告で出る)。詳細は [#9](https://github.com/ippoan/gh-actions-live/issues/9)。
+自分の端末は `dsregcmd /status` で分かる (`AzureAdJoined` / `DomainJoined` / `EnterpriseJoined` が全部 `NO` なら非管理)。
 
-の端末だけ ([ExtensionSettings](https://chromeenterprise.google/policies/extension-settings/) /
-[ExtensionInstallForcelist](https://chromeenterprise.google/policies/extension-install-forcelist/))。
-それ以外 (Windows Home、WORKGROUP、個人 PC など) では **レジストリに正しく書けていても
-Chrome が黙って捨てる**。`chrome://policy` には載るが値に `[BLOCKED]` が付いて「警告」になり、
-拡張は入らない。詳細は [#9](https://github.com/ippoan/gh-actions-live/issues/9)。
+### 非管理端末での手順 (既定)
 
-自分の端末がどちらかは `dsregcmd /status` で分かる。`AzureAdJoined` / `DomainJoined` /
-`EnterpriseJoined` が全部 `NO` なら非管理端末。
-
-| 端末 | 使う手順 |
-|---|---|
-| 管理端末 (上のいずれか) | **A. MSI** — 実行 + Chrome 再起動で入る。自動更新も効く |
-| 非管理端末 | **B. 手動読み込み** — 今すぐ動く。自動更新は無い |
-
-### A. MSI (管理端末のみ)
-
-[Releases](https://github.com/ippoan/gh-actions-live/releases) から
-`gh-actions-live-*-x64.msi` を実行し (**UAC の昇格が 1 回出る**)、**Chrome を再起動する**。
-
-MSI は 2 つのことをする:
-
-1. Chrome の `ExtensionSettings` ポリシーを HKLM に書き、拡張を `force_installed` にする
-2. 拡張一式を `C:\Program Files\gh-actions-live\extension` にも置く (B 用の予備)
-
-```
-HKLM\Software\Policies\Google\Chrome
-    ExtensionSettings = {"oaadakmclelmnaieokjbhldfacfckaaj":{"installation_mode":"force_installed","update_url":"https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml"}}
-```
-
-`update_url` は `releases/latest/download/...` の固定 URL で常に最新 Release の asset に
-解決されるので、**版が上がってもポリシーを書き換えなくてよい**。Chrome が自分で更新を拾う。
-
-#### なぜ admin が要るのか
-
-Windows は `HKCU\Software\Policies` に ACL をかけていて、**ユーザー権限では書き込めない**。
-ポリシーを使う以上 HKLM しか選択肢が無く、そのため perMachine にしている。
-
-#### 副作用
-
-Chrome に「組織によって管理されています」が出る。`force_installed` の拡張は
-ユーザーが Chrome から削除できない (アンインストールは「アプリと機能」から MSI を消す)。
-
-### B. 手動で読み込む (非管理端末 / admin を使いたくない場合)
-
-1. Release の `gh-actions-live-extension-*.zip` を展開する
-   (MSI を入れてあるなら `C:\Program Files\gh-actions-live\extension` でもよい)
-2. `chrome://extensions` → 右上「デベロッパー モード」ON →
-   「パッケージ化されていない拡張機能を読み込む」→ そのフォルダを選択
+1. [Releases](https://github.com/ippoan/gh-actions-live/releases) から `gh-actions-live-*-x64.msi` を実行 (admin 不要)
+2. `chrome://extensions` → 右上「デベロッパー モード」ON → 「パッケージ化されていない拡張機能を読み込む」→
+   `%LOCALAPPDATA%\Programs\gh-actions-live\extension`
 3. ID が `oaadakmclelmnaieokjbhldfacfckaaj` になっていることを確認
-   (manifest の `key` で固定しているので、どの経路でも同じ ID になる)
+4. オプション画面から repo を追加 (1 行 1 つ、`owner/repo`)。その Chrome プロファイルで GitHub にログインしていること
 
-更新は新しい zip を同じフォルダに上書き展開して、拡張カードの ↻ を押す。
-起動時に「デベロッパー モードの拡張機能を無効にする」の警告が出るのは仕様。
+**以降の更新は自動**。MSI を入れ直す必要は無い。
 
-### インストール後
+#### 自動更新の仕組み
 
-オプション画面から repo を追加する (1 行 1 つ、`owner/repo`)。
-その Chrome プロファイルで GitHub にログインしていること。
+Chrome は Web Store 外の拡張の `update_url` を相手にしないので、自前で 2 段:
+
+1. **`update.ps1`** (MSI がタスク スケジューラに登録: ログオン時 + 1 時間ごと、ユーザー権限) が
+   `releases/latest/download/update.xml` の版を見て、新しければ `gh-actions-live-extension.zip` を
+   落とし sha256 を照合して `extension\` を差し替える。ログは同じフォルダの `update.log`
+2. **拡張自身**が 10 分ごとにディスク上の `manifest.json` と動いている版を比べ、違えば
+   `chrome.runtime.reload()`。ダッシュボードを開いていれば開き直す
+
+ダッシュボードのヘッダに `v0.0.8 → v0.0.9 あり` と出たら 1 が動くのを待つだけ。今すぐ欲しければ
+`powershell -File "%LOCALAPPDATA%\Programs\gh-actions-live\update.ps1"` を手で叩く。
+
+MSI を使わずに zip を展開して読み込むこともできる。その場合は自動更新が無いので、
+新しい zip を同じフォルダに上書き展開して拡張カードの ↻ を押す。
+
+### 管理端末での手順
+
+`ALLUSERS=1` を付けて実行 (UAC 昇格が 1 回) → Chrome を再起動。それだけで入る。
+HKLM の `ExtensionSettings` は `update_url` が `releases/latest/download/...` の固定 URL なので、
+版が上がってもポリシーを書き換えなくてよい。Chrome に「組織によって管理されています」が出て、
+ユーザーは拡張を Chrome から削除できない (アンインストールは「アプリと機能」から MSI を消す)。
+
+`HKCU\Software\Policies` はユーザー権限で書けないため、ポリシー系は `ALLUSERS=1` (HKLM) のときだけ出る。
 
 ### トラブルシュート
 
-`chrome://policy` を開いて `ExtensionSettings` を見る。
-
-- **載っていない** → ポリシーが読まれていない。`reg query "HKLM\SOFTWARE\Policies\Google\Chrome" /v ExtensionSettings`
-  で単一の REG_SZ に JSON が入っているか確認 (サブキー形式だと読まれない)。Chrome は再起動したか
-- **載っているが `[BLOCKED]` + 警告** → 端末が非管理 (`dsregcmd /status` が全部 NO)。仕様なので
-  B の手順を使う。MSI / CRX / update.xml 側を疑っても無駄
-- **載っていて警告も無いのに入らない** → `update.xml` / `.crx` の取得か検証で失敗している。
-  `https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml` が 200 で
-  返るか、`.crx` の ID が一致するかを確認
+- **`chrome://policy` に `ExtensionSettings` が載っていない** → `ALLUSERS=1` で入れたか。
+  `reg query "HKLM\SOFTWARE\Policies\Google\Chrome" /v ExtensionSettings` で単一の REG_SZ に JSON が入っているか。Chrome は再起動したか
+- **載っているが `[BLOCKED]` + 警告** → 端末が非管理。仕様なので perUser (既定) の手順を使う
+- **自動更新が動かない** → `%LOCALAPPDATA%\Programs\gh-actions-live\update.log` を見る。
+  タスクは `schtasks /Query /TN "gh-actions-live updater"`。無ければ `update.ps1 -Register` で登録し直す
 
 ## リリースサイクル
 
@@ -174,7 +150,8 @@ manifest の version は tag から stamp されるので、repo に入ってい
 
 ```
 extension/          MV3 拡張本体 (これを Chrome に読み込む)
-installer/main.wxs  perUser MSI (WiX v4+)。拡張の配置 + Chrome ポリシー書き込み
+installer/main.wxs  MSI (WiX v4+、perUserOrMachine)。配置 + 自動更新タスク + (ALLUSERS=1 で) Chrome ポリシー
+installer/update.ps1 自動更新スクリプト (タスク スケジューラから 1 時間ごと)
 bridge/             Claude Code (Linux) 側のリレー。依存なし (下記)
 ```
 
