@@ -1,0 +1,3 @@
+# Windows PowerShell 5.1 は BOM 無し .ps1 を ANSI で読む (日本語 Windows では Shift_JIS)。
+# 日本語を含む .ps1 は UTF-8 BOM 必須。CI でも検査している。
+*.ps1 text eol=crlf

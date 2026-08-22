@@ -1,4 +1,4 @@
-<#
+﻿<#
   gh-actions-live の自動更新スクリプト (Refs #9)。
 
   Chrome は Web Store 外の拡張の update_url を相手にしないので、自動更新は自前で 2 段:
