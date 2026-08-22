@@ -276,7 +276,8 @@ const bridge = createBridge({
   },
   onCommand: (msg) => {
     switch (msg.command) {
-      case 'refresh':  boot(); break;
+      case 'refresh':  boot(); checkLatest(); break;
+      case 'check-update': checkLatest(); break;
       case 'set-config': {
         const patch = {};
         if (Array.isArray(msg.repos)) patch.repos = msg.repos.map(String).filter(Boolean);
@@ -350,11 +351,11 @@ $('update').addEventListener('click', async () => {
     btn.textContent = '更新 (失敗)'; alert('更新に失敗: ' + (r?.error || r?.output || '不明'));
   }
 });
-$('reload').addEventListener('click', () => boot());
+$('reload').addEventListener('click', () => { boot(); checkLatest(); });
 chrome.storage.onChanged.addListener((c) => { if (c.repos) boot(); });
 
 boot();
 checkLatest();
-setInterval(checkLatest, 30 * 60000);
+setInterval(checkLatest, 5 * 60000);   // 30 分だと新版が出てもボタンがなかなか出ない (実機)
 setInterval(render, 5000);                 // 相対時刻の更新
 setInterval(() => { boot(); }, 20 * 60000); // 署名トークンは時限なので定期的に取り直す
