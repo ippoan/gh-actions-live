@@ -100,6 +100,49 @@ jobs:
           node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json'))"
           echo "manifest version -> $VER"
 
+      - name: Pack CRX (署名) + update.xml
+        # Chrome ポリシー (force_installed) で配るには署名済み .crx と update manifest が要る。
+        # 署名鍵は repo secret CRX_PRIVATE_KEY。manifest の `key` と同じ鍵なので
+        # 拡張 ID は oaadakmclelmnaieokjbhldfacfckaaj で一致する。
+        # 梱包は Chrome 本体の --pack-extension を使う (windows-latest に同梱されており、
+        # 追加の npm 依存を持ち込まない)。
+        shell: pwsh
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
+          VER: ${{ steps.ver.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:CRX_PRIVATE_KEY)) {
+            throw "CRX_PRIVATE_KEY が空 (repo secret 未設定)"
+          }
+          $chrome = @(
+            "C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $chrome) { throw "chrome.exe が見つからない (runner image の変更?)" }
+          $key = Join-Path $PWD 'crx-key.pem'
+          $env:CRX_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $key
+          & $chrome --pack-extension="$PWD\extension" --pack-extension-key="$key" --no-message-box
+          $crx = "$PWD\extension.crx"
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $crx); $i++) { Start-Sleep -Milliseconds 500 }
+          if (-not (Test-Path $crx)) { throw "extension.crx が生成されなかった" }
+          Remove-Item $key -Force
+          Move-Item $crx "gh-actions-live.crx" -Force
+          # update manifest。codebase も この XML 自身も releases/latest/download/... の
+          # 固定 URL を指す。常に最新 Release の asset に解決されるので、版が上がっても
+          # ポリシー側の URL を書き換えなくてよい。
+          $codebase = "https://github.com/$env:REPO/releases/latest/download/gh-actions-live.crx"
+          @(
+            "<?xml version='1.0' encoding='UTF-8'?>",
+            "<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>",
+            "  <app appid='oaadakmclelmnaieokjbhldfacfckaaj'>",
+            "    <updatecheck codebase='$codebase' version='$env:VER' />",
+            "  </app>",
+            "</gupdate>"
+          ) | Set-Content -Encoding utf8 "update.xml"
+          Get-Item gh-actions-live.crx, update.xml
+
       - name: Install WiX
         # バージョンを固定する。無指定だと v7 が入り、WiX v6 以降で導入された
         # Open Source Maintenance Fee (OSMF) の EULA 同意を要求して
@@ -126,6 +169,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Move-Item $zip dist/
           Move-Item *.msi dist/
+          Move-Item gh-actions-live.crx dist/
+          Move-Item update.xml dist/
           Get-ChildItem dist | ForEach-Object {
             $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$h" | Out-File -Encoding ascii "$($_.FullName).sha256"

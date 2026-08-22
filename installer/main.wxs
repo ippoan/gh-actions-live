@@ -4,8 +4,13 @@
     - 拡張一式を %LOCALAPPDATA%\Programs\gh-actions-live\extension に配置する
     - MajorUpgrade で上書き更新する
     - 「アプリと機能」に uninstall を出す
-  の 3 つ。Chrome への読み込みは「パッケージ化されていない拡張機能を読み込む」で
-  上記フォルダを指す (manifest の key で ID を固定しているので毎回同じ ID になる)。
+  に加えて、Chrome の ExtensionSettings ポリシーを HKCU に書いて拡張を
+  force_installed で入れさせる。update_url は releases/latest/download/update.xml
+  の固定 URL なので、版が上がってもポリシーを書き換えなくてよい。
+
+  副作用: Chrome に「組織によって管理されています」が出る。force_installed の拡張は
+  ユーザーが Chrome から削除できない (アンインストールは MSI から)。
+  ポリシー反映には Chrome の再起動が要る。
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -31,8 +36,27 @@
       <Files Include="..\extension\**" />
     </ComponentGroup>
 
+    <!--
+      Chrome ポリシーによる強制インストール。ExtensionInstallForcelist は
+      番号付きの list policy で 1 から連番で読まれるため、他製品が既に "1" を
+      使っていると衝突する。ExtensionSettings は拡張 ID を key にした dictionary
+      なので衝突しない — こちらを使う。
+    -->
+    <ComponentGroup Id="ChromePolicy" Directory="INSTALLFOLDER">
+      <Component>
+        <RegistryKey Root="HKCU"
+                     Key="Software\Policies\Google\Chrome\ExtensionSettings\oaadakmclelmnaieokjbhldfacfckaaj"
+                     ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="installation_mode" Type="string" Value="force_installed" KeyPath="yes" />
+          <RegistryValue Name="update_url" Type="string"
+                         Value="https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml" />
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+
     <Feature Id="Main" Title="GitHub Actions Live">
       <ComponentGroupRef Id="ExtensionFiles" />
+      <ComponentGroupRef Id="ChromePolicy" />
     </Feature>
   </Package>
 </Wix>
