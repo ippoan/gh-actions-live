@@ -37,7 +37,14 @@ function frame(str) {
   return Buffer.concat([head, p]);
 }
 function sendTo(sock, obj) { try { sock.write(frame(typeof obj === 'string' ? obj : JSON.stringify(obj))); } catch {} }
-function broadcast(role, obj) { for (const [s, c] of clients) if (c.role === role) sendTo(s, obj); }
+// role は 'extension' (ダッシュボード) と 'extension-bg' (service worker) の 2 種が拡張側。
+// コマンドは両方に届ける (前方一致)。listener は完全一致。
+const isExt = (role) => role.startsWith('extension');
+function broadcast(role, obj) {
+  for (const [s, c] of clients) {
+    if (role === 'extension' ? isExt(c.role) : c.role === role) sendTo(s, obj);
+  }
+}
 
 /* ---------- イベント整形 (stdout に出す 1 行) ---------- */
 const fmtEvent = (e) => {
@@ -86,7 +93,7 @@ const server = http.createServer((req, res) => {
       try { cmd = JSON.parse(body); } catch { res.writeHead(400, cors); res.end('bad json\n'); return; }
       const payload = { type: 'command', ...cmd };
       broadcast('extension', payload);
-      const n = [...clients.values()].filter(c => c.role === 'extension').length;
+      const n = [...clients.values()].filter(c => isExt(c.role)).length;
       err(`cmd ${cmd.command || '?'} -> ${n} extension(s)`);
       res.writeHead(200, { ...cors, 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true, delivered_to: n }) + '\n');
@@ -136,7 +143,7 @@ server.on('upgrade', (req, socket) => {
 
       const text = payload.toString('utf8');
       let msg; try { msg = JSON.parse(text); } catch { msg = { type: 'raw', text }; }
-      if (info.role === 'extension') onExtensionMessage(socket, info, msg);
+      if (isExt(info.role)) onExtensionMessage(socket, info, msg);
       else broadcast('extension', msg);   // listener からのコマンド
     }
   });
