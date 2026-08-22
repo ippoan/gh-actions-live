@@ -104,22 +104,23 @@ MSI は 1 つで、**既定は perUser (admin 不要)**。管理端末向けの�
    `%LOCALAPPDATA%\Programs\gh-actions-live\extension`
 3. ID が `oaadakmclelmnaieokjbhldfacfckaaj` になっていることを確認。その Chrome プロファイルで GitHub にログインしていること
 
-**以降の更新は自動**。MSI を入れ直す必要は無い。
+**以降の更新はダッシュボードの「更新」ボタン 1 クリック**。MSI を入れ直す必要は無い。
 
-#### 自動更新の仕組み
+#### 更新の仕組み
 
-Chrome は Web Store 外の拡張の `update_url` を相手にしないので、自前で 2 段:
+Chrome は Web Store 外の拡張の `update_url` を相手にしないので自前で組む。拡張はディスクに
+書けないため、MSI が小さな **native messaging host** (`host.bat` → `host.ps1`) を
+`HKCU\Software\Google\Chrome\NativeMessagingHosts` に登録する (Policies 配下ではないので admin 不要)。
 
-1. **`update.ps1`** (MSI がタスク スケジューラに登録: ログオン時 + 1 時間ごと、ユーザー権限) が
-   `releases/latest/download/update.xml` の版を見て、新しければ `gh-actions-live-extension.zip` を
-   落とし sha256 を照合して `extension\` を差し替える。ログは同じフォルダの `update.log`
-2. **拡張自身**が 10 分ごとにディスク上の `manifest.json` と動いている版を比べ、違えば
-   `chrome.runtime.reload()`。ダッシュボードを開いていれば開き直す
+1. ヘッダに `v0.0.12 → v0.0.13 あり` と出たら **「更新」ボタン**を押す
+2. 拡張が host を呼び、host が `update.ps1` を実行: `update.xml` の版を見て
+   `gh-actions-live-extension.zip` を落とし、sha256 を照合して `extension\` を差し替える (ログは `update.log`)
+3. 拡張が `chrome.runtime.reload()`。ダッシュボードを開いていれば開き直す
 
-ダッシュボードのヘッダに `v0.0.8 → v0.0.9 あり` と出たら 1 が動くのを待つだけ。今すぐ欲しければ
-`powershell -File "%LOCALAPPDATA%\Programs\gh-actions-live\update.ps1"` を手で叩く。
+Linux 側 (bridge) から `{"command":"update"}` を送っても同じことが起きる。
+定期的に勝手に上げたい人は `update.ps1 -Register` でタスク スケジューラに登録できる (既定では登録しない)。
 
-MSI を使わずに zip を展開して読み込むこともできる。その場合は自動更新が無いので、
+MSI を使わずに zip を展開して読み込むこともできる。その場合は host が無いので、
 新しい zip を同じフォルダに上書き展開して拡張カードの ↻ を押す。
 
 ### 管理端末での手順
@@ -136,8 +137,9 @@ HKLM の `ExtensionSettings` は `update_url` が `releases/latest/download/...`
 - **`chrome://policy` に `ExtensionSettings` が載っていない** → `ALLUSERS=1` で入れたか。
   `reg query "HKLM\SOFTWARE\Policies\Google\Chrome" /v ExtensionSettings` で単一の REG_SZ に JSON が入っているか。Chrome は再起動したか
 - **載っているが `[BLOCKED]` + 警告** → 端末が非管理。仕様なので perUser (既定) の手順を使う
-- **自動更新が動かない** → `%LOCALAPPDATA%\Programs\gh-actions-live\update.log` を見る。
-  タスクは `schtasks /Query /TN "gh-actions-live updater"`。無ければ `update.ps1 -Register` で登録し直す
+- **「更新」ボタンが失敗する** → `%LOCALAPPDATA%\Programs\gh-actions-live\update.log` を見る。
+  「native host が見つかりません」なら MSI で入れていない (zip 展開) か、
+  `reg query HKCU\Software\Google\Chrome\NativeMessagingHosts\jp.ippoan.gh_actions_live` が無い
 
 ## リリースサイクル
 
@@ -160,7 +162,8 @@ manifest の version は tag から stamp されるので、repo に入ってい
 ```
 extension/          MV3 拡張本体 (これを Chrome に読み込む)
 installer/main.wxs  MSI (WiX v4+、perUserOrMachine)。配置 + 自動更新タスク + (ALLUSERS=1 で) Chrome ポリシー
-installer/update.ps1 自動更新スクリプト (タスク スケジューラから 1 時間ごと)
+installer/update.ps1 更新スクリプト (native host / 手動 / 任意でタスク登録)
+installer/host.ps1   native messaging host (「更新」ボタンの実体)
 bridge/             Claude Code (Linux) 側のリレー。依存なし (下記)
 ```
 
@@ -172,6 +175,20 @@ bridge/             Claude Code (Linux) 側のリレー。依存なし (下記)
   形が分かったら `ws.onmessage` を絞り込める。
 - `data-channel` のトークンは発行時刻 `t` 入りの時限。20 分ごとにページを取り直して更新する。
 - **未文書の内部プロトコル**なので、GitHub 側の変更で黙って壊れうる。
+
+## Claude から設定を入れる (github.com 経由)
+
+拡張は `externally_connectable` で `https://github.com/*` からのメッセージを受ける。
+Claude in Chrome は github.com のタブで JS を実行できるので、**設定画面を触らずに**
+そこから設定を流し込める (bridge URL が未設定でも届く):
+
+```js
+// github.com のタブで
+chrome.runtime.sendMessage('oaadakmclelmnaieokjbhldfacfckaaj',
+  { command: 'set-config', repos: ['owner/repo'], bridgeUrl: 'ws://host:8799', notify: false },
+  r => console.log(r));
+// command: get-config / open-dashboard / update / check-update / native-ping も同じ経路で使える
+```
 
 ## Claude Code への途中通知 (bridge)
 

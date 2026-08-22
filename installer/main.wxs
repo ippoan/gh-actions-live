@@ -5,8 +5,8 @@
     既定 (admin 不要):  msiexec /i gh-actions-live-x.y.z-x64.msi
       - 拡張一式を %LOCALAPPDATA%\Programs\gh-actions-live\extension に置く
         (per-user context では ProgramFiles64Folder がそこへリダイレクトされる)
-      - update.ps1 をタスク スケジューラに登録 (ログオン時 + 1 時間ごと、ユーザー権限)。
-        GitHub Release に新版があれば extension\ を上書きし、拡張が自分でリロードする
+      - native messaging host (host.bat → host.ps1 → update.ps1) を HKCU に登録。
+        ダッシュボードの「更新」ボタンがこれを呼び、extension\ を差し替えて拡張が自分でリロードする
       - Chrome への初回読み込みだけ手動: chrome://extensions → デベロッパーモード →
         「パッケージ化されていない拡張機能を読み込む」→ 上のフォルダ
         (非管理 Windows では Chrome が Web Store 外の force_installed を捨てるため。Refs #9)
@@ -43,23 +43,38 @@
     </ComponentGroup>
 
     <ComponentGroup Id="UpdaterFiles" Directory="INSTALLFOLDER">
-      <Component>
-        <!-- File/@Source の相対パスは wix build の cwd 基準 (Files/@Include と違う)。wxs の場所に固定する -->
-        <File Source="$(sys.SOURCEFILEDIR)update.ps1" KeyPath="yes" />
+      <!-- File/@Source の相対パスは wix build の cwd 基準 (Files/@Include と違う)。wxs の場所に固定する -->
+      <Component><File Source="$(sys.SOURCEFILEDIR)update.ps1" KeyPath="yes" /></Component>
+      <Component><File Source="$(sys.SOURCEFILEDIR)host.ps1" KeyPath="yes" /></Component>
+      <Component><File Source="$(sys.SOURCEFILEDIR)host.bat" KeyPath="yes" /></Component>
+      <Component><File Source="$(sys.SOURCEFILEDIR)native-host-manifest.json" KeyPath="yes" /></Component>
+    </ComponentGroup>
+
+    <!--
+      native messaging host の登録。拡張の「更新」ボタンが chrome.runtime.sendNativeMessage で
+      host.bat → host.ps1 → update.ps1 を呼ぶ (拡張はディスクに書けないため)。
+      NativeMessagingHosts は Policies 配下ではないので、perUser なら HKCU にユーザー権限で書ける。
+      ALLUSERS=1 のときは HKLM (always64 — WOW6432Node に落ちると読まれない)。
+      既定値 (Name 無し) に manifest の絶対パスを入れる。
+    -->
+    <ComponentGroup Id="NativeHost" Directory="INSTALLFOLDER">
+      <Component Condition="NOT (ALLUSERS=1)">
+        <RegistryValue Root="HKCU" Key="Software\Google\Chrome\NativeMessagingHosts\jp.ippoan.gh_actions_live"
+                       Type="string" KeyPath="yes" Value="[INSTALLFOLDER]native-host-manifest.json" />
+      </Component>
+      <Component Bitness="always64" Condition="ALLUSERS=1">
+        <RegistryValue Root="HKLM" Key="Software\Google\Chrome\NativeMessagingHosts\jp.ippoan.gh_actions_live"
+                       Type="string" KeyPath="yes" Value="[INSTALLFOLDER]native-host-manifest.json" />
       </Component>
     </ComponentGroup>
 
     <!--
-      自動更新タスクの登録 / 解除。Impersonate=yes で「インストールしたユーザー」として
-      schtasks に登録する (ユーザー権限で済む)。
-      - install: NOT Installed
-      - uninstall: REMOVE="ALL" で、upgrade の旧版削除 (UPGRADINGPRODUCTCODE) のときは走らせない
-        (新版の Register が直後に上書き登録するので)
+      更新は「更新」ボタン (native host 経由) か、Linux 側からの bridge コマンドで行う。
+      以前あった 1 時間ごとのタスク スケジューラ登録は廃止した。v0.0.10〜0.0.12 が登録した
+      タスクが残っている端末のため、install 時に -Unregister で掃除だけする。
+      (自分で回したい人は update.ps1 -Register を手で叩けば従来どおり登録できる)
       ExeCommand の [INSTALLFOLDER] は deferred でもスクリプト書き出し時に解決される。
     -->
-    <CustomAction Id="RegisterUpdater" Directory="INSTALLFOLDER"
-                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]update.ps1&quot; -Register"
-                  Execute="deferred" Impersonate="yes" Return="ignore" />
     <CustomAction Id="UnregisterUpdater" Directory="INSTALLFOLDER"
                   ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]update.ps1&quot; -Unregister"
                   Execute="deferred" Impersonate="yes" Return="ignore" />
@@ -78,9 +93,8 @@
                   ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]update.ps1&quot; -Seed -BridgeUrl &quot;[BRIDGEURL]&quot; -Repos &quot;[REPOS]&quot; -Notify &quot;[NOTIFY]&quot;"
                   Execute="deferred" Impersonate="yes" Return="ignore" />
     <InstallExecuteSequence>
-      <Custom Action="UnregisterUpdater" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
-      <Custom Action="RegisterUpdater" After="InstallFiles" Condition="NOT Installed" />
-      <Custom Action="SeedConfig" After="RegisterUpdater" Condition="(BRIDGEURL OR REPOS OR NOTIFY) AND NOT REMOVE" />
+      <Custom Action="UnregisterUpdater" After="InstallFiles" Condition="NOT Installed" />
+      <Custom Action="SeedConfig" After="UnregisterUpdater" Condition="(BRIDGEURL OR REPOS OR NOTIFY) AND NOT REMOVE" />
     </InstallExecuteSequence>
 
     <!--
@@ -121,6 +135,7 @@
     <Feature Id="Main" Title="GitHub Actions Live">
       <ComponentGroupRef Id="ExtensionFiles" />
       <ComponentGroupRef Id="UpdaterFiles" />
+      <ComponentGroupRef Id="NativeHost" />
       <ComponentGroupRef Id="ChromePolicy" />
       <ComponentGroupRef Id="ChromeEnrollment" />
     </Feature>

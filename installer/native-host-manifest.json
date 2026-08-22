@@ -1,0 +1,9 @@
+{
+  "name": "jp.ippoan.gh_actions_live",
+  "description": "GitHub Actions Live \u2014 local updater (runs update.ps1 on request)",
+  "path": "host.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://oaadakmclelmnaieokjbhldfacfckaaj/"
+  ]
+}

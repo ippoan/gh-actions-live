@@ -36,25 +36,58 @@ const bridge = createBridge({
   getUrl: async () => (await chrome.storage.local.get('bridgeUrl')).bridgeUrl || '',
   log: (...a) => console.log('[bg]', ...a),
   onCommand: async (msg) => {
-    if (msg.command === 'open-dashboard') {
-      const id = await openDashboard({ mode: msg.mode || 'popup' });
-      bridge.send({ type: 'ack', command: 'open-dashboard', windowId: id });
-    }
-    if (msg.command === 'check-update') checkDiskVersion();
-    // Linux 側から設定を流し込む: {command:'set-config', repos:[...], notify:bool, bridgeUrl:'...'}
-    if (msg.command === 'set-config') {
+    const r = await handleCommand(msg);
+    bridge.send({ type: 'ack', command: msg.command, ...r });
+  }
+});
+
+// ---- native messaging host (installer/host.ps1) ----
+// 拡張はディスクに書けないので、「更新」の実体はローカルの host が走らせる update.ps1。
+// MSI で入れていない (zip 展開) 端末には host が無く、sendNativeMessage が reject する。
+const NATIVE_HOST = 'jp.ippoan.gh_actions_live';
+async function nativeCall(cmd) {
+  try { return await chrome.runtime.sendNativeMessage(NATIVE_HOST, { cmd }); }
+  catch (e) { return { ok: false, error: String(e?.message || e), noHost: true }; }
+}
+// 更新: host に update.ps1 を走らせ、ディスクの版が変わったら自分をリロードする
+async function runUpdate() {
+  const r = await nativeCall('update');
+  if (r.ok && r.updated) {
+    const dash = await chrome.tabs.query({ url: chrome.runtime.getURL(DASH) });
+    await chrome.storage.local.set({ reopenDashboard: dash.length > 0, lastSelfUpdate: `${r.from} -> ${r.to}` });
+    setTimeout(() => chrome.runtime.reload(), 300);
+  }
+  return r;
+}
+
+// ---- 設定 / 操作の共通ハンドラ (bridge / github.com / ダッシュボードから同じものを呼ぶ) ----
+async function handleCommand(msg) {
+  switch (msg.command) {
+    case 'open-dashboard': return { ok: true, windowId: await openDashboard({ mode: msg.mode || 'popup' }) };
+    case 'check-update':   await checkDiskVersion(); return { ok: true };
+    case 'update':         return await runUpdate();
+    case 'native-ping':    return await nativeCall('ping');
+    case 'set-config': {
       const patch = {};
       if (Array.isArray(msg.repos)) patch.repos = msg.repos.map(String).filter(Boolean);
       if (typeof msg.notify === 'boolean') patch.notify = msg.notify;
       if (typeof msg.bridgeUrl === 'string') patch.bridgeUrl = msg.bridgeUrl.trim();
       await chrome.storage.local.set(patch);
-      bridge.send({ type: 'ack', command: 'set-config', applied: patch });
+      return { ok: true, applied: patch };
     }
-    if (msg.command === 'get-config') {
-      bridge.send({ type: 'config', ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl'])), version: chrome.runtime.getManifest().version });
-    }
-    // refresh / snapshot はダッシュボード側が処理する (run の状態はそちらにしか無い)
+    case 'get-config':
+      return { ok: true, ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl'])), version: chrome.runtime.getManifest().version };
+    default: return { ok: false, error: 'unknown command: ' + msg.command };
   }
+}
+
+// github.com のページからのメッセージ (externally_connectable)。
+// Claude in Chrome は github.com のタブで JS を実行できるので、ここが「Claude から設定を入れる」入口になる。
+// origin を厳密に見る (github.com 以外は manifest で弾かれるが二重に)。
+chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
+  if (!sender.origin || sender.origin !== 'https://github.com') { sendResponse({ ok: false, error: 'origin' }); return; }
+  handleCommand(msg || {}).then(sendResponse, e => sendResponse({ ok: false, error: String(e) }));
+  return true;
 });
 
 // ---- 自動更新 (ディスク側は installer/update.ps1 が書き換える) ----
@@ -101,6 +134,10 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
 
   if (msg.type === 'open-dashboard') {
     openDashboard({ mode: msg.mode }).then(id => sendResponse({ ok: true, windowId: id }));
+    return true;
+  }
+  if (msg.type === 'command') {
+    handleCommand(msg).then(sendResponse, e => sendResponse({ ok: false, error: String(e) }));
     return true;
   }
 
