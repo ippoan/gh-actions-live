@@ -20,7 +20,10 @@ const state = {
   pending: new Map(),
   connected: false,
   socketNote: '',
-  lastLoadAt: null
+  lastLoadAt: null,
+  // 初回スナップショットを取り終えた repo。ここに入るまで通知を出さない
+  // (取り終える前は全 run が「初めて見た」= 新規扱いになり全件通知になる)
+  bootstrapped: new Set()
 };
 
 const log = (...a) => { console.log('[live]', ...a); chrome.runtime.sendMessage({ target:'background', type:'log', args:a }).catch(()=>{}); };
@@ -93,13 +96,15 @@ async function loadRepo(repo) {
 
   ingestChannels(doc, repo);
 
+  const first = !state.bootstrapped.has(repo);
   const changed = [];
   for (const row of doc.querySelectorAll('.Box-row[id^="check_suite_"]')) {
     const r = parseRow(row);
     if (!r) continue;
     const ev = apply(repo, r);
-    if (ev) changed.push(ev);
+    if (ev && !first) changed.push(ev);
   }
+  state.bootstrapped.add(repo);
   state.lastLoadAt = new Date().toISOString();
   return changed;
 }
@@ -134,8 +139,11 @@ function debounce(key, fn, ms = 700) {
 async function announce(events) {
   if (!events.length) return;
   render();
-  const { notify = true } = await chrome.storage.local.get('notify');
-  const worth = events.filter(e => /fail|cancel|timed|error/i.test(e.label) || !e.from);
+  const { notify = false } = await chrome.storage.local.get('notify');   // 既定オフ
+  const worth = events.filter(e =>
+    /fail|cancel|timed|error|action required/i.test(e.label) ||
+    // 新しく走り出したものだけ。初見で既に completed のものは過去分なので出さない。
+    (!e.from && /running|queued|progress|waiting|pending/i.test(e.label)));
   if (notify && worth.length) chrome.runtime.sendMessage({ target:'background', type:'notify', events: worth }).catch(()=>{});
 }
 
