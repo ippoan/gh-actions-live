@@ -12,7 +12,9 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://github.com/*"
+    "https://github.com/*",
+    "https://objects.githubusercontent.com/*",
+    "https://release-assets.githubusercontent.com/*"
   ],
   "background": {
     "service_worker": "background.js",
