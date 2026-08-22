@@ -44,7 +44,8 @@
 
     <ComponentGroup Id="UpdaterFiles" Directory="INSTALLFOLDER">
       <Component>
-        <File Source="update.ps1" KeyPath="yes" />
+        <!-- File/@Source の相対パスは wix build の cwd 基準 (Files/@Include と違う)。wxs の場所に固定する -->
+        <File Source="$(sys.SOURCEFILEDIR)update.ps1" KeyPath="yes" />
       </Component>
     </ComponentGroup>
 
