@@ -32,6 +32,18 @@ jobs:
             console.log("manifest OK:", m.name, m.version);
           '
 
+      - name: .ps1 は UTF-8 BOM 付きか (Windows PowerShell 5.1 は BOM 無しを ANSI で読んで文字化けする)
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in $(git ls-files '*.ps1'); do
+            if [ "$(head -c3 "$f" | xxd -p)" != "efbbbf" ]; then
+              echo "::error file=$f::UTF-8 BOM が無い。日本語を含むと Windows PowerShell 5.1 で構文エラーになる (v0.0.10 で実害)"
+              fail=1
+            fi
+          done
+          exit $fail
+
       - name: 参照されている HTML/JS が実在するか
         run: |
           set -euo pipefail
