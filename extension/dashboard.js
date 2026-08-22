@@ -19,7 +19,11 @@ const state = {
   runs: new Map(),           // "repo#checkSuiteId" -> run
   pending: new Map(),
   connected: false,
-  lastLoadAt: null
+  socketNote: '',
+  lastLoadAt: null,
+  // 初回スナップショットを取り終えた repo。ここに入るまで通知を出さない
+  // (取り終える前は全 run が「初めて見た」= 新規扱いになり全件通知になる)
+  bootstrapped: new Set()
 };
 
 const log = (...a) => { console.log('[live]', ...a); chrome.runtime.sendMessage({ target:'background', type:'log', args:a }).catch(()=>{}); };
@@ -49,11 +53,14 @@ function parseRow(row) {
   };
 }
 
-async function fetchDoc(path) {
-  const r = await fetch(GH + path, {
-    credentials: 'include',
-    headers: { 'Accept': 'text/html', 'X-Requested-With': 'XMLHttpRequest' }
-  });
+// partial=true のときだけ XHR ヘッダを付ける。
+// フルページに付けると GitHub が断片だけ返し、<head> にある
+// link[rel="shared-web-socket"] が取れなくなる (行は断片に入るので
+// run 一覧は出るのに socket だけ繋がらない、という出方をする)。
+async function fetchDoc(path, { partial = false } = {}) {
+  const headers = { 'Accept': 'text/html' };
+  if (partial) headers['X-Requested-With'] = 'XMLHttpRequest';
+  const r = await fetch(GH + path, { credentials: 'include', headers });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return parser.parseFromString(await r.text(), 'text/html');
 }
@@ -81,25 +88,30 @@ function apply(repo, r) {
 async function loadRepo(repo) {
   const doc = await fetchDoc(`/${repo}/actions`);
   const link = doc.querySelector('link[rel="shared-web-socket"]');
-  if (link) state.socketUrl = link.getAttribute('href');
-  else log(`${repo}: shared-web-socket が無い (未ログイン?)`);
+  if (link) { state.socketUrl = link.getAttribute('href'); state.socketNote = ''; }
+  else {
+    state.socketNote = 'socket URL 無し (未ログイン?)';
+    log(`${repo}: link[rel=shared-web-socket] が無い — 未ログインか、断片だけが返っている`);
+  }
 
   ingestChannels(doc, repo);
 
+  const first = !state.bootstrapped.has(repo);
   const changed = [];
   for (const row of doc.querySelectorAll('.Box-row[id^="check_suite_"]')) {
     const r = parseRow(row);
     if (!r) continue;
     const ev = apply(repo, r);
-    if (ev) changed.push(ev);
+    if (ev && !first) changed.push(ev);
   }
+  state.bootstrapped.add(repo);
   state.lastLoadAt = new Date().toISOString();
   return changed;
 }
 
 // 1 run だけ軽く確定させる (約 10KB)
 async function refreshRun(repo, checkSuiteId) {
-  const doc = await fetchDoc(`/${repo}/actions/workflow-run/${checkSuiteId}`);
+  const doc = await fetchDoc(`/${repo}/actions/workflow-run/${checkSuiteId}`, { partial: true });
   const row = doc.querySelector('.Box-row[id^="check_suite_"]');
   if (!row) return [];
   ingestChannels(doc, repo);
@@ -127,8 +139,11 @@ function debounce(key, fn, ms = 700) {
 async function announce(events) {
   if (!events.length) return;
   render();
-  const { notify = true } = await chrome.storage.local.get('notify');
-  const worth = events.filter(e => /fail|cancel|timed|error/i.test(e.label) || !e.from);
+  const { notify = false } = await chrome.storage.local.get('notify');   // 既定オフ
+  const worth = events.filter(e =>
+    /fail|cancel|timed|error|action required/i.test(e.label) ||
+    // 新しく走り出したものだけ。初見で既に completed のものは過去分なので出さない。
+    (!e.from && /running|queued|progress|waiting|pending/i.test(e.label)));
   if (notify && worth.length) chrome.runtime.sendMessage({ target:'background', type:'notify', events: worth }).catch(()=>{});
 }
 
@@ -201,7 +216,8 @@ function card(r) {
 function render() {
   $('live').className = 'live ' + (state.connected ? 'on' : 'off');
   $('meta').textContent = `${state.repos.length} repos · ${state.runs.size} runs · ${
-    state.connected ? 'socket 接続中' : '未接続'} · ${state.lastLoadAt ? new Date(state.lastLoadAt).toLocaleTimeString() : '—'}`;
+    state.connected ? 'socket 接続中' : ('未接続' + (state.socketNote ? ` (${state.socketNote})` : ''))} · ${
+    state.lastLoadAt ? new Date(state.lastLoadAt).toLocaleTimeString() : '—'}`;
 
   const byRepo = new Map(state.repos.map(r => [r, []]));
   for (const r of state.runs.values()) {

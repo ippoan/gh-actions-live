@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 async function load() {
   const s = await chrome.storage.local.get(['repos', 'notify', 'rawSamples']);
   $('repos').value = (s.repos || []).join('\n');
-  $('notify').checked = s.notify !== false;
+  $('notify').checked = s.notify === true;   // 既定オフ
   $('raw').textContent = (s.rawSamples || []).slice(0, 5).join('\n\n') || '(まだ無し)';
 }
 
