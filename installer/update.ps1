@@ -31,6 +31,22 @@ function Log($msg) {
   Write-Host $line
 }
 
+if ($Seed) {
+  $cfgPath = Join-Path $ExtDir 'config.json'
+  # ConvertFrom-Json -AsHashtable は PowerShell 6+ 限定なので 5.1 向けに PSObject から組み直す
+  $cfg = @{}
+  if (Test-Path $cfgPath) {
+    try { $old = Get-Content $cfgPath -Raw | ConvertFrom-Json; foreach ($pp in $old.PSObject.Properties) { $cfg[$pp.Name] = $pp.Value } } catch { $cfg = @{} }
+  }
+  if ($BridgeUrl) { $cfg.bridgeUrl = $BridgeUrl }
+  if ($Repos)     { $cfg.repos = @($Repos -split '[,; ]+' | Where-Object { $_ }) }
+  if ($Notify)    { $cfg.notify = ($Notify -match '^(1|true|yes|on)$') }
+  $cfg.seededAt = (Get-Date).ToString('o')
+  ($cfg | ConvertTo-Json -Depth 4) | Set-Content -Path $cfgPath -Encoding utf8
+  Log "seeded $cfgPath (bridgeUrl=$($cfg.bridgeUrl); repos=$($cfg.repos -join ','))"
+  exit 0
+}
+
 if ($Register) {
   $ps = (Get-Command powershell.exe).Source
   $action  = New-ScheduledTaskAction -Execute $ps `

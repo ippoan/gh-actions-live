@@ -89,11 +89,20 @@ MSI は 1 つで、**既定は perUser (admin 不要)**。管理端末向けの�
 
 ### 非管理端末での手順 (既定)
 
-1. [Releases](https://github.com/ippoan/gh-actions-live/releases) から `gh-actions-live-*-x64.msi` を実行 (admin 不要)
+1. [Releases](https://github.com/ippoan/gh-actions-live/releases) から `gh-actions-live-*-x64.msi` を落とし、
+   **設定ごと** インストールする (admin 不要):
+
+   ```
+   msiexec /i gh-actions-live-x.y.z-x64.msi REPOS=owner/repo,owner/repo2 BRIDGEURL=ws://host:8799 NOTIFY=0
+   ```
+
+   property は全部任意。渡した値は `extension\config.json` に書かれ、拡張が起動時に取り込む。
+   **設定画面での手入力は不要**。拡張を入れ直して `chrome.storage` が消えても config.json から戻る。
+   あとから変えたいときは同じコマンドを渡し直す (upgrade で上書き)。
+   ダブルクリックで入れた場合は設定画面から手で入れる (従来どおり)
 2. `chrome://extensions` → 右上「デベロッパー モード」ON → 「パッケージ化されていない拡張機能を読み込む」→
    `%LOCALAPPDATA%\Programs\gh-actions-live\extension`
-3. ID が `oaadakmclelmnaieokjbhldfacfckaaj` になっていることを確認
-4. オプション画面から repo を追加 (1 行 1 つ、`owner/repo`)。その Chrome プロファイルで GitHub にログインしていること
+3. ID が `oaadakmclelmnaieokjbhldfacfckaaj` になっていることを確認。その Chrome プロファイルで GitHub にログインしていること
 
 **以降の更新は自動**。MSI を入れ直す必要は無い。
 
@@ -176,6 +185,8 @@ Windows Chrome 拡張  ──ws://<linux>:8799──▶  ws-bridge.mjs  ──st
         └──────── {"type":"command",...} ◀─────────┘  POST /cmd  /  stdin  /  ?role=listener
 ```
 
+- Linux → 拡張 (設定): `curl -X POST localhost:8799/cmd -d '{"command":"set-config","repos":["owner/repo"],"notify":false}'`
+  で repo を変えられる。`get-config` で現在値を返す
 - 拡張 → Linux: run の状態変化を 1 行ずつ stdout に出す。Claude Code の `Monitor` ツールが
   それを通知に変える (`Monitor({command: "node bridge/ws-bridge.mjs 8799", persistent: true})`)
 - Linux → 拡張: `curl -X POST localhost:8799/cmd -d '{"command":"open-dashboard","mode":"popup"}'`
