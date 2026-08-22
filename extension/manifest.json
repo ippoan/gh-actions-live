@@ -6,12 +6,14 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr1EjwabBqKr4ovUT9zkRDHsy+9lU0ca5294wo8aGAXhw97Ts+IozVQ4r1nSYehJ1SW3BQ7PHFHeTiI7Q39RWDZIi+A2HRsBXgc1yQcFN6baqqnIYVXL2tsUUNYf4tDVRbXyxntzk0tnu78Yxc3BgTlxKDacZWGtpjYVX1fLjEM1HV+BdyxjIzLra5W41Xi+pq23stbYjbjrSZFLSGIUhAypKwg1Ha4/Oh6M5Ot5GZKN63TeXzxl7D2OXcO1p+oh7huKHm22N99STcJnxtMnEdatamVl55ILjkdSzQ8EjdEiCitVPb8s16jVLGsRmV9VujWxcN2OLpdWhRkXU5AOqIQIDAQAB",
   "permissions": [
     "alarms",
+    "declarativeNetRequestWithHostAccess",
     "nativeMessaging",
     "notifications",
     "storage",
     "tabs"
   ],
   "host_permissions": [
+    "*://alive.github.com/*",
     "https://github.com/*",
     "https://objects.githubusercontent.com/*",
     "https://release-assets.githubusercontent.com/*"

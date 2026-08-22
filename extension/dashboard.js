@@ -22,6 +22,7 @@ const state = {
   runs: new Map(),           // "repo#checkSuiteId" -> run
   pending: new Map(),
   connected: false,
+  aliveBackoff: 4000, aliveFails: 0, aliveTimer: null,
   socketNote: '',
   bridgeStatus: 'off', bridgeNote: '',
   lastLoadAt: null,
@@ -163,7 +164,7 @@ function connect() {
   const ws = new WebSocket(state.socketUrl);
   state.socket = ws;
 
-  ws.onopen = () => { state.connecting = false; state.connected = true; render(); subscribeAll(); };
+  ws.onopen = () => { state.connecting = false; state.connected = true; state.aliveBackoff = 4000; state.aliveFails = 0; render(); subscribeAll(); };
 
   ws.onmessage = async e => {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }
@@ -188,7 +189,20 @@ function connect() {
     }
   };
 
-  ws.onclose = ev => { state.connecting = false; state.connected = false; state.lastClose = { code: ev.code, reason: ev.reason, at: new Date().toISOString() }; render(); log('closed', ev.code, ev.reason); setTimeout(boot, 4000); };
+  // 切断時の再接続は指数バックオフ (4s → 最大 5 分)。以前は 4 秒後に boot() (Actions ページを
+  // 丸ごと再取得) を無条件に呼んでいたため、握手が即 1006 で落ちる状況では
+  // 「ページ取得 → 接続 → 即切断 → ページ取得」の 5 秒周期ポーリングになっていた (実機)。
+  // ページの取り直し (トークン更新) は 5 回に 1 回だけにする。
+  ws.onclose = ev => {
+    state.connecting = false; state.connected = false;
+    state.lastClose = { code: ev.code, reason: ev.reason, at: new Date().toISOString() };
+    render(); log('alive closed', ev.code, ev.reason);
+    const delay = state.aliveBackoff || 4000;
+    state.aliveBackoff = Math.min(delay * 2, 5 * 60000);
+    state.aliveFails = (state.aliveFails || 0) + 1;
+    clearTimeout(state.aliveTimer);
+    state.aliveTimer = setTimeout(() => (state.aliveFails % 5 === 0 ? boot() : connect()), delay);
+  };
   ws.onerror  = () => { state.connecting = false; state.connected = false; state.lastError = new Date().toISOString(); render(); };
 }
 

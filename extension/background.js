@@ -30,6 +30,25 @@ async function openDashboard({ mode = 'popup' } = {}) {
   return (await chrome.windows.create(opts)).id;
 }
 
+// ---- alive.github.com への WebSocket の Origin を書き換える ----
+// 拡張ページから張る WebSocket の Origin は chrome-extension://<id> になり、
+// alive.github.com はこれを弾く (握手直後に 1006 で落ちる。github.com のタブからは繋がる)。
+// declarativeNetRequest で握手リクエストの Origin を https://github.com に差し替える。
+// session rule なので再起動のたびに入れ直す。
+async function installAliveOriginRule() {
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [1],
+      addRules: [{
+        id: 1, priority: 1,
+        action: { type: 'modifyHeaders', requestHeaders: [{ header: 'Origin', operation: 'set', value: 'https://github.com' }] },
+        condition: { urlFilter: '||alive.github.com/', resourceTypes: ['websocket'] }
+      }]
+    });
+  } catch (e) { console.warn('[bg] DNR rule failed', e); }
+}
+installAliveOriginRule();
+
 // ---- Linux 側リレー ----
 const bridge = createBridge({
   role: 'extension-bg',
@@ -108,6 +127,7 @@ async function checkDiskVersion() {
 }
 
 chrome.runtime.onInstalled.addListener(async (d) => {
+  await installAliveOriginRule();
   chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 });
   chrome.alarms.create('self-update-check', { periodInMinutes: 10 });
   await applySeedConfig((...a) => console.log('[bg]', ...a));
@@ -116,7 +136,7 @@ chrome.runtime.onInstalled.addListener(async (d) => {
   const { reopenDashboard } = await chrome.storage.local.get('reopenDashboard');
   if (reopenDashboard) { await chrome.storage.local.remove('reopenDashboard'); openDashboard({ mode: 'popup' }); }
 });
-chrome.runtime.onStartup.addListener(async () => { await applySeedConfig(); bridge.ensure(); checkDiskVersion(); });
+chrome.runtime.onStartup.addListener(async () => { await installAliveOriginRule(); await applySeedConfig(); bridge.ensure(); checkDiskVersion(); });
 chrome.alarms.onAlarm.addListener(async a => {
   if (a.name === 'bridge-keepalive') bridge.ensure();
   if (a.name === 'self-update-check') { await applySeedConfig(); checkDiskVersion(); }
