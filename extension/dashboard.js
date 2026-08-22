@@ -198,7 +198,10 @@ const cls = s =>
   /success/i.test(s)                                          ? 's-ok'  :
   /running|queued|progress|waiting|pending|request/i.test(s)  ? 's-run' :
   /fail|cancel|timed|error|action required/i.test(s)          ? 's-bad' : 's-idle';
-const RANK = { 's-bad':0, 's-run':1, 's-idle':2, 's-ok':3 };
+// 並び: 実行中だけ上に寄せ、あとは新しい順。
+// 以前は失敗も上に固定していたが、36 分前の failed が直近の success より上に来て
+// 「ソートされていない」ように見えた。失敗は赤い帯で十分目立つので時系列に戻す。
+const RANK = s => (s === 's-run' ? 0 : 1);
 
 function ago(t) {
   if (!t) return '';
@@ -232,8 +235,8 @@ function render() {
   }
 
   const html = [...byRepo.entries()].map(([repo, runs]) => {
-    runs.sort((a, b) => (RANK[cls(a.status)] - RANK[cls(b.status)]) ||
-                        String(b.at || '').localeCompare(String(a.at || '')));
+    runs.sort((a, b) => (RANK(cls(a.status)) - RANK(cls(b.status))) ||
+                        String(b.at || b.seenAt || '').localeCompare(String(a.at || a.seenAt || '')));
     const active = runs.filter(r => cls(r.status) === 's-run').length;
     const bad    = runs.filter(r => cls(r.status) === 's-bad').length;
     return `<section>
@@ -273,7 +276,8 @@ const bridge = createBridge({
   },
   onCommand: (msg) => {
     switch (msg.command) {
-      case 'refresh':  boot(); break;
+      case 'refresh':  boot(); checkLatest(); break;
+      case 'check-update': checkLatest(); break;
       case 'set-config': {
         const patch = {};
         if (Array.isArray(msg.repos)) patch.repos = msg.repos.map(String).filter(Boolean);
@@ -347,11 +351,11 @@ $('update').addEventListener('click', async () => {
     btn.textContent = '更新 (失敗)'; alert('更新に失敗: ' + (r?.error || r?.output || '不明'));
   }
 });
-$('reload').addEventListener('click', () => boot());
+$('reload').addEventListener('click', () => { boot(); checkLatest(); });
 chrome.storage.onChanged.addListener((c) => { if (c.repos) boot(); });
 
 boot();
 checkLatest();
-setInterval(checkLatest, 30 * 60000);
+setInterval(checkLatest, 5 * 60000);   // 30 分だと新版が出てもボタンがなかなか出ない (実機)
 setInterval(render, 5000);                 // 相対時刻の更新
 setInterval(() => { boot(); }, 20 * 60000); // 署名トークンは時限なので定期的に取り直す
