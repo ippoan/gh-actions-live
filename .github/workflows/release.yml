@@ -4,51 +4,91 @@ name: Release
 # 既存実装 (ippoan/cc-webreview-ext:.github/workflows/release.yml) の構成に合わせるが、
 # native host を持たないので Rust build / cargo-wix / minisign (self-update 用署名) は無い。
 #
-# 起動経路は 2 つ:
-#   1. workflow_call — ci.yml が PR から呼ぶ。tag `dev-<run_number>` の prerelease を PR head に打つ
-#   2. push tags 'v*'  — stable。tag をそのまま Release にする (非 prerelease = Latest)
+# バージョンは自動採番する。直近の `v*` tag の patch を +1、tag が無ければ 0.0.1 から。
+# 手で tag を打つ経路は持たない (二重採番になるため) — 任意の版を切りたい場合は
+# workflow_dispatch の `version` に指定する。
+#
+# 起動経路は 3 つ:
+#   1. push branches main — stable。次の版を採番して `vX.Y.Z` の Release を作る (Latest)
+#   2. workflow_call      — ci.yml が PR から呼ぶ。`dev-<run_number>` の prerelease を PR head に打つ
+#   3. workflow_dispatch  — 版を明示して手動で切る
+#
+# NOTE: tag は softprops/action-gh-release が Release 作成時に打つ。GITHUB_TOKEN で
+# 打った tag は他の workflow を起動しないので、tag push を経由した chaining はしない
+# (この job 内で build から Release 作成まで完結させる)。
 
 on:
+  push:
+    branches: [main]
   workflow_call:
     inputs:
       tag_name:
-        description: 'Release の tag 名 (例 dev-123)。未指定なら push された tag を使う。'
+        description: 'Release の tag 名 (例 dev-123)。'
         required: true
         type: string
       target_commitish:
         description: 'tag を打つ先の SHA (PR head)。checkout もこの ref で行う。'
         required: true
         type: string
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '切りたい版 (例 1.2.0)。空なら自動採番。'
+        required: false
+        type: string
 
 permissions:
   contents: write
 
+# 連続 push で同じ版を二重採番しないよう直列化する。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      # tag 名は $() 等を含み得るので run へ直接 ${{ }} 展開しない
-      TAG: ${{ inputs.tag_name || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_commitish || '' }}
+          # 採番のため tag を全部持ってくる
+          fetch-depth: 0
 
-      - name: Compute version (dev-N -> 0.0.N / vX.Y.Z -> X.Y.Z)
+      - name: Resolve version / tag
         id: ver
         shell: bash
+        env:
+          DEV_TAG: ${{ inputs.tag_name }}
+          MANUAL: ${{ inputs.version }}
         run: |
-          if [[ "$TAG" =~ ^dev-([0-9]+)$ ]]; then
-            echo "version=0.0.${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
-          elif [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          last=$(git tag -l 'v*' | sort -V | tail -1)
+          if [ -z "$last" ]; then
+            next="0.0.1"
           else
-            echo "::error::tag が想定形式 (dev-N / vX.Y.Z) ではない: $TAG"
-            exit 1
+            base="${last#v}"
+            IFS=. read -r a b c <<< "$base"
+            next="${a}.${b}.$((c + 1))"
           fi
+          echo "直近の tag: ${last:-(なし)} -> 次の版: $next"
+
+          if [ -n "${MANUAL:-}" ]; then
+            if [[ ! "$MANUAL" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::version が X.Y.Z 形式ではない: $MANUAL"; exit 1
+            fi
+            version="$MANUAL"; tag="v$MANUAL"; pre=false
+          elif [ -n "${DEV_TAG:-}" ]; then
+            # dev prerelease。版は「次に出る stable と同じ」= その PR が出す予定の版。
+            version="$next"; tag="$DEV_TAG"; pre=true
+          else
+            version="$next"; tag="v$next"; pre=false
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"         >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre"  >> "$GITHUB_OUTPUT"
+          echo "-> tag=$tag version=$version prerelease=$pre"
 
       - name: Stamp manifest version
         shell: bash
@@ -78,6 +118,8 @@ jobs:
       - name: Package extension zip + sha256
         # windows-latest に zip コマンドが無いので Compress-Archive を使う
         shell: pwsh
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
         run: |
           $zip = "gh-actions-live-extension-$env:TAG.zip"
           Compress-Archive -Path "extension/*" -DestinationPath $zip -Force
@@ -92,9 +134,8 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          tag_name: ${{ steps.ver.outputs.tag }}
           target_commitish: ${{ inputs.target_commitish || '' }}
-          # `-dev-`/`dev-` を含む tag は prerelease。揃えないと dev が "Latest" を奪う。
-          prerelease: ${{ startsWith(inputs.tag_name || github.ref_name, 'dev-') }}
+          prerelease: ${{ steps.ver.outputs.prerelease }}
           files: dist/*
           fail_on_unmatched_files: true
