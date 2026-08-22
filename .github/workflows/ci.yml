@@ -48,6 +48,9 @@ jobs:
     needs: check
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     uses: ./.github/workflows/release.yml
+    # workflow_call には secret が自動で渡らない。inherit しないと
+    # CRX_PRIVATE_KEY が空のまま呼ばれて署名で落ちる。
+    secrets: inherit
     with:
       tag_name: dev-${{ github.run_number }}
       target_commitish: ${{ github.event.pull_request.head.sha }}

@@ -74,28 +74,43 @@ chrome.windows.create({ url, type: 'popup',  state: 'fullscreen' })      // 全�
 
 ## インストール
 
-### MSI (推奨、admin 不要)
+### MSI (admin 不要)
 
-1. [Releases](https://github.com/ippoan/gh-actions-live/releases) から
-   `gh-actions-live-*-x64.msi` を実行。
-   `%LOCALAPPDATA%\Programs\gh-actions-live\extension` に配置される (perUser)。
-2. `chrome://extensions` → デベロッパーモード ON →
-   「パッケージ化されていない拡張機能を読み込む」→ 上記フォルダを選択。
-   ID が `oaadakmclelmnaieokjbhldfacfckaaj` になることを確認
-   (manifest の `key` で固定済み。違う ID なら manifest が壊れている)。
-3. オプションから repo を追加 (1 行 1 つ、`owner/repo`)。
-4. その Chrome プロファイルで GitHub にログインしていること。
+[Releases](https://github.com/ippoan/gh-actions-live/releases) から
+`gh-actions-live-*-x64.msi` を実行し、**Chrome を再起動する**。それだけで拡張が入る。
 
-更新は新しい MSI を入れ直すだけ (MajorUpgrade で上書き)。
-アンインストールは「アプリと機能」から。
+MSI は 2 つのことをする:
 
-native host を持たないので、MSI がやるのはファイル配置と upgrade / uninstall だけ。
-Chrome への読み込みは手動のまま。
+1. 拡張一式を `%LOCALAPPDATA%\Programs\gh-actions-live\extension` に配置 (perUser)
+2. Chrome の `ExtensionSettings` ポリシーを HKCU に書き、拡張を `force_installed` にする
 
-### zip / ソースから
+```
+HKCU\Software\Policies\Google\Chrome\ExtensionSettings\oaadakmclelmnaieokjbhldfacfckaaj
+    installation_mode = force_installed
+    update_url        = https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml
+```
 
-Release の `gh-actions-live-extension-*.zip` を展開するか、この repo の
-`extension/` フォルダをそのまま「パッケージ化されていない拡張機能を読み込む」で指す。
+`update_url` は `releases/latest/download/...` の固定 URL で常に最新 Release の
+asset に解決されるので、**版が上がってもポリシーを書き換えなくてよい**。
+Chrome が自分で更新を拾う。
+
+インストール後、オプション画面から repo を追加する (1 行 1 つ、`owner/repo`)。
+その Chrome プロファイルで GitHub にログインしていること。
+
+**副作用**: Chrome に「組織によって管理されています」が出る。`force_installed` の拡張は
+ユーザーが Chrome から削除できない (アンインストールは「アプリと機能」から MSI を消す。
+ポリシーキーも一緒に消える)。
+
+`ExtensionInstallForcelist` ではなく `ExtensionSettings` を使っているのは、前者が
+1 から連番で読まれる list policy で、他製品が既に `1` を使っていると衝突するため。
+後者は拡張 ID を key にした dictionary なので衝突しない。
+
+### 手動で読み込む場合
+
+ポリシーを使いたくないなら、Release の `gh-actions-live-extension-*.zip` を展開するか
+この repo の `extension/` を「パッケージ化されていない拡張機能を読み込む」で指す。
+manifest の `key` で ID を固定しているので、どちらでも ID は
+`oaadakmclelmnaieokjbhldfacfckaaj` になる。
 
 ## リリースサイクル
 
@@ -114,7 +129,7 @@ manifest の version は tag から stamp されるので、repo に入ってい
 
 ```
 extension/          MV3 拡張本体 (これを Chrome に読み込む)
-installer/main.wxs  perUser MSI (WiX v4+)
+installer/main.wxs  perUser MSI (WiX v4+)。拡張の配置 + Chrome ポリシー書き込み
 bridge/             拡張から外へイベントを出すための最小 WS サーバー (依存なし・任意)
 ```
 
