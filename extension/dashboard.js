@@ -7,6 +7,7 @@
 // ページが持つ run は畳まれていないので、同一 repo で並列に走る run が全部並ぶ。
 
 import { createBridge } from './bridge-client.js';
+import { applySeedConfig } from './seed-config.js';
 
 const GH = 'https://github.com';
 const parser = new DOMParser();
@@ -273,6 +274,14 @@ const bridge = createBridge({
   onCommand: (msg) => {
     switch (msg.command) {
       case 'refresh':  boot(); break;
+      case 'set-config': {
+        const patch = {};
+        if (Array.isArray(msg.repos)) patch.repos = msg.repos.map(String).filter(Boolean);
+        if (typeof msg.notify === 'boolean') patch.notify = msg.notify;
+        if (typeof msg.bridgeUrl === 'string') patch.bridgeUrl = msg.bridgeUrl.trim();
+        chrome.storage.local.set(patch).then(() => { bridge.send({ type: 'ack', command: 'set-config', applied: patch }); boot(); });
+        break;
+      }
       case 'snapshot': bridge.send({ type: 'snapshot', runs: snapshot() }); break;
       case 'open-dashboard':
         // 自分が開いている = もう開いている。前面に出すだけ background に頼む
@@ -304,8 +313,12 @@ async function checkLatest() {
 /* ---------------- 起動 ---------------- */
 
 async function boot() {
+  await applySeedConfig(log);   // インストーラーが書いた config.json があれば取り込む
   const { repos = [] } = await chrome.storage.local.get('repos');
   state.repos = repos;
+  // repo が空でもリレーには繋ぐ (Linux 側から set-config できるように)。
+  // 以前はここで return していて、repo 未設定だと bridge が「—」のまま動かなかった。
+  bridge.ensure();
   if (!repos.length) { render(); return; }
 
   for (const repo of repos) {

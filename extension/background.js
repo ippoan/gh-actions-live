@@ -6,6 +6,7 @@
 // 短命だが、WebSocket の往来 (リレーの 20 秒 ping と pong) が続く限り生き続ける。
 // 念のため chrome.alarms (最小 30 秒) でも再接続を蹴る。
 import { createBridge } from './bridge-client.js';
+import { applySeedConfig } from './seed-config.js';
 
 const DASH = 'dashboard.html';
 
@@ -40,6 +41,18 @@ const bridge = createBridge({
       bridge.send({ type: 'ack', command: 'open-dashboard', windowId: id });
     }
     if (msg.command === 'check-update') checkDiskVersion();
+    // Linux 側から設定を流し込む: {command:'set-config', repos:[...], notify:bool, bridgeUrl:'...'}
+    if (msg.command === 'set-config') {
+      const patch = {};
+      if (Array.isArray(msg.repos)) patch.repos = msg.repos.map(String).filter(Boolean);
+      if (typeof msg.notify === 'boolean') patch.notify = msg.notify;
+      if (typeof msg.bridgeUrl === 'string') patch.bridgeUrl = msg.bridgeUrl.trim();
+      await chrome.storage.local.set(patch);
+      bridge.send({ type: 'ack', command: 'set-config', applied: patch });
+    }
+    if (msg.command === 'get-config') {
+      bridge.send({ type: 'config', ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl'])), version: chrome.runtime.getManifest().version });
+    }
     // refresh / snapshot はダッシュボード側が処理する (run の状態はそちらにしか無い)
   }
 });
@@ -64,17 +77,19 @@ async function checkDiskVersion() {
 chrome.runtime.onInstalled.addListener(async (d) => {
   chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 });
   chrome.alarms.create('self-update-check', { periodInMinutes: 10 });
+  await applySeedConfig((...a) => console.log('[bg]', ...a));
   bridge.ensure();
   if (d.reason === 'update') {
     const { reopenDashboard } = await chrome.storage.local.get('reopenDashboard');
     if (reopenDashboard) { await chrome.storage.local.remove('reopenDashboard'); openDashboard({ mode: 'popup' }); }
   }
 });
-chrome.runtime.onStartup.addListener(() => { bridge.ensure(); checkDiskVersion(); });
-chrome.alarms.onAlarm.addListener(a => {
+chrome.runtime.onStartup.addListener(async () => { await applySeedConfig(); bridge.ensure(); checkDiskVersion(); });
+chrome.alarms.onAlarm.addListener(async a => {
   if (a.name === 'bridge-keepalive') bridge.ensure();
-  if (a.name === 'self-update-check') checkDiskVersion();
+  if (a.name === 'self-update-check') { await applySeedConfig(); checkDiskVersion(); }
 });
+applySeedConfig().then(() => bridge.ensure());
 chrome.storage.onChanged.addListener(c => { if (c.bridgeUrl) bridge.connect(); });
 bridge.ensure();
 

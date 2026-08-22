@@ -63,9 +63,24 @@
     <CustomAction Id="UnregisterUpdater" Directory="INSTALLFOLDER"
                   ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]update.ps1&quot; -Unregister"
                   Execute="deferred" Impersonate="yes" Return="ignore" />
+    <!--
+      設定の seed。msiexec の property で渡すと extension\config.json に書く:
+        msiexec /i gh-actions-live-x.y.z-x64.msi BRIDGEURL=ws://host:8799 REPOS=owner/repo,owner/repo2 NOTIFY=0
+      拡張は起動時に自分のフォルダの config.json を読んで設定に取り込む。
+      設定画面での手入力が不要になり、拡張を入れ直しても (chrome.storage が消えても) 設定が残る。
+      update.ps1 は更新時に config.json を引き継ぐ。
+      値が 1 つでも渡されたときだけ走る。upgrade で渡し直せば上書きされる (再設定の手段)。
+    -->
+    <Property Id="BRIDGEURL" Secure="yes" />
+    <Property Id="REPOS" Secure="yes" />
+    <Property Id="NOTIFY" Secure="yes" />
+    <CustomAction Id="SeedConfig" Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]update.ps1&quot; -Seed -BridgeUrl &quot;[BRIDGEURL]&quot; -Repos &quot;[REPOS]&quot; -Notify &quot;[NOTIFY]&quot;"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="UnregisterUpdater" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="RegisterUpdater" After="InstallFiles" Condition="NOT Installed" />
+      <Custom Action="SeedConfig" After="RegisterUpdater" Condition="(BRIDGEURL OR REPOS OR NOTIFY) AND NOT REMOVE" />
     </InstallExecuteSequence>
 
     <!--
