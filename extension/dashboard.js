@@ -188,8 +188,8 @@ function connect() {
     }
   };
 
-  ws.onclose = ev => { state.connecting = false; state.connected = false; render(); log('closed', ev.code); setTimeout(boot, 4000); };
-  ws.onerror  = () => { state.connecting = false; state.connected = false; render(); };
+  ws.onclose = ev => { state.connecting = false; state.connected = false; state.lastClose = { code: ev.code, reason: ev.reason, at: new Date().toISOString() }; render(); log('closed', ev.code, ev.reason); setTimeout(boot, 4000); };
+  ws.onerror  = () => { state.connecting = false; state.connected = false; state.lastError = new Date().toISOString(); render(); };
 }
 
 /* ---------------- 描画 ---------------- */
@@ -287,6 +287,17 @@ const bridge = createBridge({
         break;
       }
       case 'snapshot': bridge.send({ type: 'snapshot', runs: snapshot() }); break;
+      case 'status':
+        // 診断用。alive socket の状態を Linux 側から見る
+        bridge.send({ type: 'status',
+          version: chrome.runtime.getManifest().version,
+          alive: { connected: state.connected, connecting: state.connecting,
+                   hasSocketUrl: !!state.socketUrl, readyState: state.socket?.readyState ?? null,
+                   lastClose: state.lastClose || null, lastError: state.lastError || null,
+                   subscribedTopics: state.tokenByTopic.size, note: state.socketNote },
+          repos: state.repos, runs: state.runs.size, lastLoadAt: state.lastLoadAt,
+          bridge: state.bridgeStatus });
+        break;
       case 'open-dashboard':
         // 自分が開いている = もう開いている。前面に出すだけ background に頼む
         chrome.runtime.sendMessage({ target: 'background', type: 'open-dashboard', mode: msg.mode }).catch(() => {});
