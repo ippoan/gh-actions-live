@@ -11,6 +11,9 @@
   「値 installation_mode をキー ...\ExtensionSettings\<id> に書き込めません」で失敗する。
   ポリシーを使う以上 HKLM しか選択肢が無い。
 
+  非管理端末では ExtensionSettings が効かない (Chrome の仕様、Refs #9)。
+  ENROLLMENTTOKEN を渡すと Chrome Enterprise Core に登録し、効くようになる。
+
   ポリシー反映には Chrome の再起動が要る。
   副作用: Chrome に「組織によって管理されています」が出る。force_installed の拡張は
   ユーザーが Chrome から削除できない (アンインストールは MSI から。ForceDeleteOnUninstall
@@ -67,9 +70,40 @@
       </Component>
     </ComponentGroup>
 
+    <!--
+      Chrome Enterprise Core (旧 CBCM) への登録 (Refs #9)。
+      非管理 Windows (Home / WORKGROUP / Entra 非参加) では、Chrome は Web Store 外の
+      force_installed を黙って捨てる (公式仕様)。端末を Chrome Enterprise Core に
+      登録すると、上の ExtensionSettings がそのまま効き始める。
+
+      token は **インストール時に public property で渡す**:
+        msiexec /i gh-actions-live-x.y.z-x64.msi ENROLLMENTTOKEN=<token>
+      渡さなければこの component は出ない (= 今までどおり何もしない)。
+      MSI に焼き込まない理由: この repo も Release 資産も public なので、焼き込むと
+      「端末を組織管理下に入れる資格情報」が誰でも落とせる MSI に平文で入る。
+
+      Secure="yes" が要る。無いとコマンドラインの property が昇格後の
+      execute sequence に渡らず、条件が常に偽になる。
+
+      token は Chrome が一度読んで enroll すればその後は不要 (DM token は別の場所に
+      保存される)。upgrade 時に渡さなくても既に enroll 済みなら影響しない。
+    -->
+    <Property Id="ENROLLMENTTOKEN" Secure="yes" />
+    <ComponentGroup Id="ChromeEnrollment" Directory="INSTALLFOLDER">
+      <Component Bitness="always64" Condition="ENROLLMENTTOKEN">
+        <RegistryValue Root="HKLM"
+                       Key="Software\Policies\Google\Chrome"
+                       Name="CloudManagementEnrollmentToken"
+                       Type="string"
+                       KeyPath="yes"
+                       Value="[ENROLLMENTTOKEN]" />
+      </Component>
+    </ComponentGroup>
+
     <Feature Id="Main" Title="GitHub Actions Live">
       <ComponentGroupRef Id="ExtensionFiles" />
       <ComponentGroupRef Id="ChromePolicy" />
+      <ComponentGroupRef Id="ChromeEnrollment" />
     </Feature>
   </Package>
 </Wix>
