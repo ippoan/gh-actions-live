@@ -16,7 +16,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt
 
 const state = {
   repos: [],
-  socket: null, socketUrl: null, connecting: false,
+  socketUrl: null,
   tokenByTopic: new Map(),   // topic -> 署名済み data-channel
   repoByTopic: new Map(),    // topic -> "owner/repo"
   runs: new Map(),           // "repo#checkSuiteId" -> run
@@ -129,14 +129,6 @@ async function refreshRun(repo, checkSuiteId) {
 
 /* ---------------- alive socket ---------------- */
 
-function subscribeAll() {
-  if (state.socket?.readyState !== WebSocket.OPEN) return;
-  const subscribe = {};
-  for (const v of state.tokenByTopic.values()) subscribe[v] = null;
-  state.socket.send(JSON.stringify({ subscribe }));
-  log(`subscribed ${Object.keys(subscribe).length} channels`);
-}
-
 function debounce(key, fn, ms = 700) {
   clearTimeout(state.pending.get(key));
   state.pending.set(key, setTimeout(fn, ms));
@@ -154,57 +146,56 @@ async function announce(events) {
   if (notify && worth.length) chrome.runtime.sendMessage({ target:'background', type:'notify', events: worth }).catch(()=>{});
 }
 
+// alive の socket は **github.com のタブ** (content script) が持つ。
+// 拡張ページから張ると Origin が chrome-extension:// になり 1006 で切られるため
+// (v0.0.19 の DNR による Origin 書き換えでも直らなかった)。
+// ここは socket URL と購読トークンを background に渡し、結果を受け取るだけ。
 function connect() {
-  if (state.connecting) return;
-  const s = state.socket;
-  if (s && (s.readyState === WebSocket.OPEN || s.readyState === WebSocket.CONNECTING)) { subscribeAll(); return; }
   if (!state.socketUrl) return;
+  const tokens = [...state.tokenByTopic.values()];
+  chrome.runtime.sendMessage({ target: 'background', type: 'alive-connect', url: state.socketUrl, tokens })
+    .then(r => { if (!r?.ok) { state.socketNote = r?.error || 'タブに接続できない'; render(); } })
+    .catch(e => { state.socketNote = String(e); render(); });
+}
 
-  state.connecting = true;
-  const ws = new WebSocket(state.socketUrl);
-  state.socket = ws;
+// content script からのイベントは background 経由で届く
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.target !== 'dashboard') return;
 
-  ws.onopen = () => { state.connecting = false; state.connected = true; state.aliveBackoff = 4000; state.aliveFails = 0; render(); subscribeAll(); };
+  if (msg.type === 'alive-status') {
+    state.connected = (msg.state === 'open' || msg.state === 'subscribed' || msg.state === 'ack');
+    state.socketNote = state.connected ? '' : (msg.state === 'closed' ? `切断 ${msg.code ?? ''}` : (msg.error || msg.state));
+    if (msg.state === 'closed' || msg.state === 'error') {
+      // タブ側で切れた。バックオフして張り直す (ページの取り直しは 5 回に 1 回)
+      state.aliveBackoff = Math.min((state.aliveBackoff || 4000) * 2, 5 * 60000);
+      state.aliveFails = (state.aliveFails || 0) + 1;
+      clearTimeout(state.aliveTimer);
+      state.aliveTimer = setTimeout(() => (state.aliveFails % 5 === 0 ? boot() : connect()), state.aliveBackoff);
+    } else if (state.connected) {
+      state.aliveBackoff = 4000; state.aliveFails = 0;
+    }
+    render();
+    return;
+  }
 
-  ws.onmessage = async e => {
-    let msg; try { msg = JSON.parse(e.data); } catch { return; }
-    if (msg.e === 'ack') return;
+  if (msg.type === 'alive-message') {
+    let m; try { m = JSON.parse(msg.data); } catch { return; }
+    chrome.storage.local.get('rawSamples').then(({ rawSamples = [] }) =>
+      chrome.storage.local.set({ rawSamples: [String(msg.data).slice(0, 1000), ...rawSamples].slice(0, 50) }));
 
-    // push の形は未文書。サンプルを残して後で絞り込めるようにする。
-    const { rawSamples = [] } = await chrome.storage.local.get('rawSamples');
-    chrome.storage.local.set({ rawSamples: [String(e.data).slice(0, 1000), ...rawSamples].slice(0, 50) });
-
-    const topic = msg.ch ? (decodeChannel(msg.ch) || msg.ch) : null;
+    const topic = m.ch ? (decodeChannel(m.ch) || m.ch) : null;
     const repo = topic ? state.repoByTopic.get(topic) : null;
-
     if (topic?.startsWith('check_suites:') && repo) {
       const id = topic.split(':')[1];
       debounce(topic, () => refreshRun(repo, id).then(announce).catch(err => log('refreshRun', String(err))));
     } else {
-      // repo 単位の合図 (新規 run など) → ページごと読み直してトークンも更新
       for (const rp of repo ? [repo] : state.repos) {
-        debounce('repo:' + rp, () => loadRepo(rp).then(evs => { announce(evs); subscribeAll(); })
+        debounce('repo:' + rp, () => loadRepo(rp).then(evs => { announce(evs); connect(); })
           .catch(err => log('loadRepo', String(err))), 1200);
       }
     }
-  };
-
-  // 切断時の再接続は指数バックオフ (4s → 最大 5 分)。以前は 4 秒後に boot() (Actions ページを
-  // 丸ごと再取得) を無条件に呼んでいたため、握手が即 1006 で落ちる状況では
-  // 「ページ取得 → 接続 → 即切断 → ページ取得」の 5 秒周期ポーリングになっていた (実機)。
-  // ページの取り直し (トークン更新) は 5 回に 1 回だけにする。
-  ws.onclose = ev => {
-    state.connecting = false; state.connected = false;
-    state.lastClose = { code: ev.code, reason: ev.reason, at: new Date().toISOString() };
-    render(); log('alive closed', ev.code, ev.reason);
-    const delay = state.aliveBackoff || 4000;
-    state.aliveBackoff = Math.min(delay * 2, 5 * 60000);
-    state.aliveFails = (state.aliveFails || 0) + 1;
-    clearTimeout(state.aliveTimer);
-    state.aliveTimer = setTimeout(() => (state.aliveFails % 5 === 0 ? boot() : connect()), delay);
-  };
-  ws.onerror  = () => { state.connecting = false; state.connected = false; state.lastError = new Date().toISOString(); render(); };
-}
+  }
+});
 
 /* ---------------- 描画 ---------------- */
 
@@ -305,10 +296,9 @@ const bridge = createBridge({
         // 診断用。alive socket の状態を Linux 側から見る
         bridge.send({ type: 'status',
           version: chrome.runtime.getManifest().version,
-          alive: { connected: state.connected, connecting: state.connecting,
-                   hasSocketUrl: !!state.socketUrl, readyState: state.socket?.readyState ?? null,
-                   lastClose: state.lastClose || null, lastError: state.lastError || null,
-                   subscribedTopics: state.tokenByTopic.size, note: state.socketNote },
+          alive: { connected: state.connected, hasSocketUrl: !!state.socketUrl,
+                   subscribedTopics: state.tokenByTopic.size, note: state.socketNote,
+                   fails: state.aliveFails || 0 },
           repos: state.repos, runs: state.runs.size, lastLoadAt: state.lastLoadAt,
           bridge: state.bridgeStatus });
         break;

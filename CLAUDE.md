@@ -19,8 +19,12 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
 - `main.wxs`: `File/@Source` は cwd 基準 (`$(sys.SOURCEFILEDIR)` を付ける)、`Files/@Include` は wxs 基準。
   HKLM 系 component は `Bitness="always64"` + `ALLUSERS=1` 条件。WiX は **5.0.2 固定** (6+ は OSMF EULA)
 - `manifest.json`: `host_permissions` に `release-assets.githubusercontent.com` / `objects.githubusercontent.com`
-  (Release 資産のリダイレクト先) と `*://alive.github.com/*` (DNR の Origin 書き換え) が要る。
+  (Release 資産のリダイレクト先) が要る。
   `key` を変えると拡張 ID が変わり MSI のポリシー / native host manifest / README が全部ずれる
+- **alive の WebSocket は github.com のタブ (content script `alive-relay.js`) が持つ。**
+  拡張ページ (`chrome-extension://`) から張ると Origin で弾かれ握手直後に 1006。
+  DNR の `modifyHeaders` では websocket 握手の Origin を変えられない (v0.0.19 で実測・失敗)。
+  background が pinned タブを用意し、ダッシュボードは socket URL と購読トークンを渡すだけ
 - `dashboard.js`: alive 切断時の再接続は指数バックオフ。無条件に `boot()` を呼ぶと 5 秒周期ポーリングになる
 - 非管理 Windows では HKLM の `ExtensionSettings` を Chrome が捨てる (仕様)。
   「MSI で入らない」は #9 を先に読む
