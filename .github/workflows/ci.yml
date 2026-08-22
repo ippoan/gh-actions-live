@@ -54,3 +54,27 @@ jobs:
     with:
       tag_name: dev-${{ github.run_number }}
       target_commitish: ${{ github.event.pull_request.head.sha }}
+
+  # CI green (dev release の MSI / CRX ビルド成功込み) → squash auto-merge。
+  # org 標準の reusable (cc-webreview-ext / cdp-relay と同じ呼び方)。
+  # deploy 系 job は本 repo に無いので deploy gate はそのまま通る。
+  #
+  # merge されると main への push で Release が自動採番されて出る
+  # (release.yml)。つまり PR を出して CI が緑になれば、そのまま
+  # 新しい版が Latest として公開される。
+  auto-merge:
+    name: Auto Merge
+    needs: [check, dev-release]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      needs.check.result == 'success' &&
+      needs['dev-release'].result == 'success'
+    uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    # CI_APP_ID / CI_APP_PRIVATE_KEY (org secret) を渡す。App token でないと
+    # merge の push actor が github-actions[bot] になり、release.yml が発火しない。
+    secrets: inherit
