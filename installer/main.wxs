@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  perUser MSI (admin 不要)。native host を持たないので、この MSI がやるのは
-    - 拡張一式を %LOCALAPPDATA%\Programs\gh-actions-live\extension に配置する
-    - MajorUpgrade で上書き更新する
-    - 「アプリと機能」に uninstall を出す
-  に加えて、Chrome の ExtensionSettings ポリシーを HKCU に書いて拡張を
-  force_installed で入れさせる。update_url は releases/latest/download/update.xml
-  の固定 URL なので、版が上がってもポリシーを書き換えなくてよい。
+  perMachine MSI (インストール時に UAC 昇格が要る)。やることは 2 つ:
 
-  副作用: Chrome に「組織によって管理されています」が出る。force_installed の拡張は
-  ユーザーが Chrome から削除できない (アンインストールは MSI から)。
+    1. Chrome の ExtensionSettings ポリシーを HKLM に書いて拡張を force_installed にする
+    2. 拡張一式を Program Files にも置く (ポリシー経路が使えないときの手動読み込み用)
+
+  **なぜ perMachine か**: Windows は `HKCU\Software\Policies` に ACL をかけており、
+  ユーザー権限では書き込めない (ユーザーが自分にポリシーを適用できないようにするため)。
+  perUser MSI だと install 時に
+  「値 installation_mode をキー ...\ExtensionSettings\<id> に書き込めません」で失敗する。
+  ポリシーを使う以上 HKLM しか選択肢が無い。
+
   ポリシー反映には Chrome の再起動が要る。
+  副作用: Chrome に「組織によって管理されています」が出る。force_installed の拡張は
+  ユーザーが Chrome から削除できない (アンインストールは MSI から。ForceDeleteOnUninstall
+  でポリシーキーも消える)。
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -18,17 +22,15 @@
       Manufacturer="ippoan"
       Version="$(var.Version)"
       UpgradeCode="63AA7341-F629-4E7E-AC1D-CEDB0D51C6F5"
-      Scope="perUser"
+      Scope="perMachine"
       Compressed="yes">
 
     <MajorUpgrade DowngradeErrorMessage="より新しいバージョンが既にインストールされています。" />
     <MediaTemplate EmbedCab="yes" />
 
-    <StandardDirectory Id="LocalAppDataFolder">
-      <Directory Id="ProgramsFolder" Name="Programs">
-        <Directory Id="INSTALLFOLDER" Name="gh-actions-live">
-          <Directory Id="EXTFOLDER" Name="extension" />
-        </Directory>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="gh-actions-live">
+        <Directory Id="EXTFOLDER" Name="extension" />
       </Directory>
     </StandardDirectory>
 
@@ -37,14 +39,17 @@
     </ComponentGroup>
 
     <!--
-      Chrome ポリシーによる強制インストール。ExtensionInstallForcelist は
-      番号付きの list policy で 1 から連番で読まれるため、他製品が既に "1" を
-      使っていると衝突する。ExtensionSettings は拡張 ID を key にした dictionary
-      なので衝突しない — こちらを使う。
+      Chrome ポリシーによる強制インストール。
+      ExtensionInstallForcelist は 1 から連番で読まれる list policy なので、他製品が
+      既に "1" を使っていると衝突する。ExtensionSettings は拡張 ID を key にした
+      dictionary なので衝突しない — こちらを使う。
+
+      Bitness="always64" が要る。既定だと 64bit Windows で
+      HKLM\Software\WOW6432Node\Policies\... に落ちてしまい、64bit Chrome が読まない。
     -->
     <ComponentGroup Id="ChromePolicy" Directory="INSTALLFOLDER">
-      <Component>
-        <RegistryKey Root="HKCU"
+      <Component Bitness="always64">
+        <RegistryKey Root="HKLM"
                      Key="Software\Policies\Google\Chrome\ExtensionSettings\oaadakmclelmnaieokjbhldfacfckaaj"
                      ForceDeleteOnUninstall="yes">
           <RegistryValue Name="installation_mode" Type="string" Value="force_installed" KeyPath="yes" />

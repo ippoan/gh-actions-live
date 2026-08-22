@@ -74,18 +74,19 @@ chrome.windows.create({ url, type: 'popup',  state: 'fullscreen' })      // 全�
 
 ## インストール
 
-### MSI (admin 不要)
+### MSI
 
 [Releases](https://github.com/ippoan/gh-actions-live/releases) から
-`gh-actions-live-*-x64.msi` を実行し、**Chrome を再起動する**。それだけで拡張が入る。
+`gh-actions-live-*-x64.msi` を実行し(**UAC の昇格が 1 回出る**)、**Chrome を再起動する**。
+それだけで拡張が入る。
 
 MSI は 2 つのことをする:
 
-1. 拡張一式を `%LOCALAPPDATA%\Programs\gh-actions-live\extension` に配置 (perUser)
-2. Chrome の `ExtensionSettings` ポリシーを HKCU に書き、拡張を `force_installed` にする
+1. Chrome の `ExtensionSettings` ポリシーを HKLM に書き、拡張を `force_installed` にする
+2. 拡張一式を `C:\Program Files\gh-actions-live\extension` にも置く (手動読み込み用の予備)
 
 ```
-HKCU\Software\Policies\Google\Chrome\ExtensionSettings\oaadakmclelmnaieokjbhldfacfckaaj
+HKLM\Software\Policies\Google\Chrome\ExtensionSettings\oaadakmclelmnaieokjbhldfacfckaaj
     installation_mode = force_installed
     update_url        = https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml
 ```
@@ -97,20 +98,34 @@ Chrome が自分で更新を拾う。
 インストール後、オプション画面から repo を追加する (1 行 1 つ、`owner/repo`)。
 その Chrome プロファイルで GitHub にログインしていること。
 
-**副作用**: Chrome に「組織によって管理されています」が出る。`force_installed` の拡張は
+#### なぜ admin が要るのか
+
+Windows は `HKCU\Software\Policies` に ACL をかけていて、**ユーザー権限では書き込めない**
+(ユーザーが自分にポリシーを適用できないようにするため)。perUser MSI で試すと
+`値 installation_mode をキー ...\ExtensionSettings\<id> に書き込めません` で失敗する。
+ポリシーを使う以上 HKLM しか選択肢が無く、そのため perMachine にしている。
+
+admin を使いたくない場合は下の「手動で読み込む場合」を使う。
+
+#### 副作用
+
+Chrome に「組織によって管理されています」が出る。`force_installed` の拡張は
 ユーザーが Chrome から削除できない (アンインストールは「アプリと機能」から MSI を消す。
-ポリシーキーも一緒に消える)。
+`ForceDeleteOnUninstall` でポリシーキーも一緒に消える)。
 
-`ExtensionInstallForcelist` ではなく `ExtensionSettings` を使っているのは、前者が
-1 から連番で読まれる list policy で、他製品が既に `1` を使っていると衝突するため。
-後者は拡張 ID を key にした dictionary なので衝突しない。
+### 手動で読み込む場合 (admin 不要)
 
-### 手動で読み込む場合
-
-ポリシーを使いたくないなら、Release の `gh-actions-live-extension-*.zip` を展開するか
-この repo の `extension/` を「パッケージ化されていない拡張機能を読み込む」で指す。
-manifest の `key` で ID を固定しているので、どちらでも ID は
+Release の `gh-actions-live-extension-*.zip` を展開するか、この repo の `extension/` を
+`chrome://extensions` → デベロッパーモード ON → 「パッケージ化されていない拡張機能を
+読み込む」で指す。manifest の `key` で ID を固定しているので、どちらでも ID は
 `oaadakmclelmnaieokjbhldfacfckaaj` になる。
+
+### トラブルシュート
+
+`chrome://policy` を開いて `ExtensionSettings` が載っているかを見る。
+
+- **載っていない** → ポリシーが読まれていない (MSI が失敗しているか Chrome 未再起動)
+- **載っているのに拡張が入らない** → `update.xml` / `.crx` の取得か検証で失敗している
 
 ## リリースサイクル
 
