@@ -1,7 +1,8 @@
 const $ = id => document.getElementById(id);
 
 async function load() {
-  const s = await chrome.storage.local.get(['repos', 'notify', 'rawSamples']);
+  const s = await chrome.storage.local.get(['repos', 'notify', 'rawSamples', 'bridgeUrl']);
+  $('bridgeUrl').value = s.bridgeUrl || '';
   $('repos').value = (s.repos || []).join('\n');
   $('notify').checked = s.notify === true;   // 既定オフ
   $('raw').textContent = (s.rawSamples || []).slice(0, 5).join('\n\n') || '(まだ無し)';
@@ -10,7 +11,8 @@ async function load() {
 $('save').addEventListener('click', async () => {
   await chrome.storage.local.set({
     repos: $('repos').value.split('\n').map(s => s.trim()).filter(Boolean),
-    notify: $('notify').checked
+    notify: $('notify').checked,
+    bridgeUrl: $('bridgeUrl').value.trim()
   });
   $('save').textContent = '保存しました';
   setTimeout(() => ($('save').textContent = '保存'), 1200);
