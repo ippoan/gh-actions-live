@@ -25,6 +25,14 @@ $ExtDir   = Join-Path $Root 'extension'
 $LogFile  = Join-Path $Root 'update.log'
 $Base     = "https://github.com/$Repo/releases/latest/download"
 
+# GitHub の Release 資産は application/octet-stream で返るため、5.1 の Invoke-WebRequest は
+# .Content を string ではなく byte[] で返す ([xml] に流すと落ちる)。文字列に正規化する。
+function Get-Text($uri, $timeout = 30) {
+  $c = (Invoke-WebRequest -UseBasicParsing -Uri $uri -TimeoutSec $timeout).Content
+  if ($c -is [byte[]]) { $c = [Text.Encoding]::UTF8.GetString($c) }
+  return [string]$c
+}
+
 function Log($msg) {
   $line = "{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $msg
   Add-Content -Path $LogFile -Value $line -Encoding utf8
@@ -68,13 +76,32 @@ if ($Unregister) {
   exit 0
 }
 
+# ---- 自分 (更新スクリプト群) の自己修復 ----
+# update.ps1 / host.ps1 / host.bat は zip に入っていないので、ここで Release の最新を取って
+# 差し替える。実行中の自分を上書きしても PowerShell は読み込み済みなので問題ない。
+# 失敗しても本体の更新は続ける (ネット断等)。
+try {
+  foreach ($name in @('update.ps1', 'host.ps1', 'host.bat')) {
+    $dst = Join-Path $Root $name
+    $new = Get-Text "$Base/$name" 60
+    if (-not $new) { continue }
+    $cur = if (Test-Path $dst) { [IO.File]::ReadAllText($dst) } else { '' }
+    if ($new.TrimStart([char]0xFEFF) -ne $cur.TrimStart([char]0xFEFF)) {
+      # .ps1 は BOM 付き UTF-8 で書く (5.1 が Shift_JIS で読んで壊れるのを防ぐ)
+      if ($name -like '*.ps1') { [IO.File]::WriteAllText($dst, $new.TrimStart([char]0xFEFF), (New-Object Text.UTF8Encoding $true)) }
+      else { [IO.File]::WriteAllText($dst, $new, [Text.Encoding]::ASCII) }
+      Log "self-updated $name"
+    }
+  }
+} catch { Log "self-update skipped: $($_.Exception.Message)" }
+
 # ---- 更新チェック ----
 try {
   $local = '0.0.0'
   $manifest = Join-Path $ExtDir 'manifest.json'
   if (Test-Path $manifest) { $local = (Get-Content $manifest -Raw | ConvertFrom-Json).version }
 
-  [xml]$xml = (Invoke-WebRequest -UseBasicParsing -Uri "$Base/update.xml" -TimeoutSec 30).Content
+  [xml]$xml = (Get-Text "$Base/update.xml").TrimStart([char]0xFEFF)
   $remote = $xml.gupdate.app.updatecheck.version
   if (-not $remote) { throw "update.xml から version が読めない" }
 
@@ -86,7 +113,7 @@ try {
   New-Item -ItemType Directory -Path $tmp | Out-Null
   $zip = Join-Path $tmp 'extension.zip'
   Invoke-WebRequest -UseBasicParsing -Uri "$Base/gh-actions-live-extension.zip" -OutFile $zip -TimeoutSec 120
-  $want = ((Invoke-WebRequest -UseBasicParsing -Uri "$Base/gh-actions-live-extension.zip.sha256" -TimeoutSec 30).Content).Trim().ToLower()
+  $want = (Get-Text "$Base/gh-actions-live-extension.zip.sha256").Trim().ToLower()
   $have = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
   if ($want -ne $have) { throw "sha256 mismatch: want $want have $have" }
 

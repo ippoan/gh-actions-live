@@ -181,6 +181,9 @@ jobs:
           # releases/latest/download/gh-actions-live-extension.zip で取れるように。
           Copy-Item $zip "dist/gh-actions-live-extension.zip"
           Move-Item $zip dist/
+          # 更新スクリプト群も資産にする。update.ps1 が実行前にこれを取って自分を差し替える
+          # (zip に入っていないので、MSI 入れ直し無しでスクリプトのバグ修正を届けるため)
+          Copy-Item installer/update.ps1, installer/host.ps1, installer/host.bat dist/
           Move-Item *.msi dist/
           Move-Item gh-actions-live.crx dist/
           Move-Item update.xml dist/
