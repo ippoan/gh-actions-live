@@ -362,7 +362,14 @@ $('update').addEventListener('click', async () => {
     btn.textContent = '更新 (失敗)'; alert('更新に失敗: ' + (r?.error || r?.output || '不明'));
   }
 });
-$('reload').addEventListener('click', () => { boot(); checkLatest(); });
+// 再読込 = 拡張ごと再起動する (ページ内の再取得ではなく)。chrome.runtime.reload() で
+// background も含めて立ち上げ直し、ディスク上に新版があればそれも拾う。
+// reopenDashboard を立てておくと background の onInstalled がこのウィンドウを開き直す。
+$('reload').addEventListener('click', async () => {
+  $('reload').disabled = true; $('reload').textContent = '再起動中…';
+  await chrome.storage.local.set({ reopenDashboard: true });
+  chrome.runtime.reload();
+});
 chrome.storage.onChanged.addListener((c) => { if (c.repos) boot(); });
 
 boot();

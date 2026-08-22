@@ -112,10 +112,9 @@ chrome.runtime.onInstalled.addListener(async (d) => {
   chrome.alarms.create('self-update-check', { periodInMinutes: 10 });
   await applySeedConfig((...a) => console.log('[bg]', ...a));
   bridge.ensure();
-  if (d.reason === 'update') {
-    const { reopenDashboard } = await chrome.storage.local.get('reopenDashboard');
-    if (reopenDashboard) { await chrome.storage.local.remove('reopenDashboard'); openDashboard({ mode: 'popup' }); }
-  }
+  // 再読込ボタン / self-update の後にダッシュボードを開き直す (reason は unpacked の reload だと 'update')
+  const { reopenDashboard } = await chrome.storage.local.get('reopenDashboard');
+  if (reopenDashboard) { await chrome.storage.local.remove('reopenDashboard'); openDashboard({ mode: 'popup' }); }
 });
 chrome.runtime.onStartup.addListener(async () => { await applySeedConfig(); bridge.ensure(); checkDiskVersion(); });
 chrome.alarms.onAlarm.addListener(async a => {
