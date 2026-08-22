@@ -61,7 +61,12 @@ jobs:
           echo "manifest version -> $VER"
 
       - name: Install WiX
-        run: dotnet tool install --global wix
+        # バージョンを固定する。無指定だと v7 が入り、WiX v6 以降で導入された
+        # Open Source Maintenance Fee (OSMF) の EULA 同意を要求して
+        # `error WIX7015` で落ちる。v5 は EULA 不要で、installer/main.wxs の
+        # v4 スキーマ (`Files` 要素 / `Scope="perUser"`) をそのまま解釈できる。
+        # v6+ に上げる場合は OSMF の可否を先に判断すること。
+        run: dotnet tool install --global wix --version 5.0.2
 
       - name: Build MSI
         shell: pwsh
