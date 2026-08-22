@@ -303,10 +303,12 @@ async function checkLatest() {
     const xml = new DOMParser().parseFromString(await r.text(), 'text/xml');
     const latest = xml.querySelector('updatecheck')?.getAttribute('version');
     const cmp = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i]||0) !== (y[i]||0)) return (x[i]||0) - (y[i]||0); } return 0; };
+    const btn = $('update');
     if (latest && cmp(latest, running) > 0) {
       el.textContent = `v${running} → v${latest} あり`; el.style.color = 'var(--run)';
-      el.title = '新版が Release に出ています。自動更新タスク (update.ps1) が 1 時間以内に差し替え、拡張が自分でリロードします。手動読み込みの場合は zip を展開し直してください。';
-    } else { el.textContent = `v${running}`; el.style.color = 'var(--dim)'; }
+      el.title = '新版が Release に出ています。「更新」を押すと native host が update.ps1 を実行し、拡張が自分でリロードします (MSI で入れた端末のみ。zip 展開なら展開し直し)。';
+      btn.style.display = ''; btn.textContent = `v${latest} に更新`; btn.disabled = false;
+    } else { el.textContent = `v${running}`; el.style.color = 'var(--dim)'; btn.style.display = 'none'; }
   } catch { el.textContent = `v${running}`; }
 }
 
@@ -331,6 +333,20 @@ async function boot() {
 }
 
 $('opts').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('update').addEventListener('click', async () => {
+  const btn = $('update'); btn.disabled = true; btn.textContent = '更新中…';
+  const r = await chrome.runtime.sendMessage({ target: 'background', type: 'command', command: 'update' }).catch(e => ({ ok: false, error: String(e) }));
+  if (r?.ok && r.updated) { btn.textContent = `v${r.to} に更新 → リロード中…`; return; }   // background が reload する
+  btn.disabled = false;
+  if (r?.noHost) {
+    btn.textContent = '更新 (MSI 未導入)';
+    alert('native host が見つかりません。MSI で入れた端末でのみボタン更新が使えます。\nzip 展開で入れている場合は、新しい zip を同じフォルダに展開して拡張カードの ↻ を押してください。');
+  } else if (r?.ok) {
+    btn.textContent = '更新'; alert('ディスク上は最新でした (' + (r.to || '?') + ')。');
+  } else {
+    btn.textContent = '更新 (失敗)'; alert('更新に失敗: ' + (r?.error || r?.output || '不明'));
+  }
+});
 $('reload').addEventListener('click', () => boot());
 chrome.storage.onChanged.addListener((c) => { if (c.repos) boot(); });
 
