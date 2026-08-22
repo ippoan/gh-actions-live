@@ -30,6 +30,13 @@ on:
         description: 'tag を打つ先の SHA (PR head)。checkout もこの ref で行う。'
         required: true
         type: string
+    secrets:
+      CRX_PRIVATE_KEY:
+        description: |
+          .crx 署名鍵 (PEM)。extension/manifest.json の `key` と同一の鍵。
+          workflow_call では secret が自動で渡らないため、ここで宣言して
+          caller 側から `secrets: inherit` で渡す必要がある。
+        required: true
   workflow_dispatch:
     inputs:
       version:
