@@ -161,7 +161,10 @@ jobs:
       - name: Build MSI
         shell: pwsh
         run: |
-          wix build installer/main.wxs `
+          # -arch x64 が要る。既定は x86 パッケージで、その場合
+          # ProgramFiles64Folder が正しく解決せずファイルが配置されない
+          # (レジストリだけ書かれて C:\Program Files\gh-actions-live が出来ない)。
+          wix build installer/main.wxs -arch x64 `
             -d Version=${{ steps.ver.outputs.version }} `
             -o "gh-actions-live-${{ steps.ver.outputs.version }}-x64.msi"
 

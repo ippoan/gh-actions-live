@@ -40,22 +40,30 @@
 
     <!--
       Chrome ポリシーによる強制インストール。
-      ExtensionInstallForcelist は 1 から連番で読まれる list policy なので、他製品が
-      既に "1" を使っていると衝突する。ExtensionSettings は拡張 ID を key にした
-      dictionary なので衝突しない — こちらを使う。
 
-      Bitness="always64" が要る。既定だと 64bit Windows で
-      HKLM\Software\WOW6432Node\Policies\... に落ちてしまい、64bit Chrome が読まない。
+      **書式が重要**: ExtensionSettings は dictionary policy で、Windows では
+      `Chrome` キー直下の **単一 REG_SZ に JSON を丸ごと**入れる形でしか読まれない。
+      拡張 ID のサブキー + 個別値として書くと、レジストリには入るが Chrome は
+      完全に無視する (chrome://policy に一切出ない)。実機で確認済み。
+
+      ExtensionInstallForcelist (1 から連番の list policy) を使えば衝突しない書き方も
+      できるが、他製品が "1" を使っていると壊れるため採らない。単一値である以上、
+      他製品が同じ ExtensionSettings を使っていれば上書きになる点は許容する。
+
+      Bitness="always64": 32bit component だと 64bit Windows で
+      HKLM\Software\WOW6432Node\Policies\... に落ちて 64bit Chrome が読まない。
+
+      アンインストール時はこの値だけが消える。Chrome キー自体は他ポリシーが
+      同居しうるので ForceDeleteOnUninstall は付けない。
     -->
     <ComponentGroup Id="ChromePolicy" Directory="INSTALLFOLDER">
       <Component Bitness="always64">
-        <RegistryKey Root="HKLM"
-                     Key="Software\Policies\Google\Chrome\ExtensionSettings\oaadakmclelmnaieokjbhldfacfckaaj"
-                     ForceDeleteOnUninstall="yes">
-          <RegistryValue Name="installation_mode" Type="string" Value="force_installed" KeyPath="yes" />
-          <RegistryValue Name="update_url" Type="string"
-                         Value="https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml" />
-        </RegistryKey>
+        <RegistryValue Root="HKLM"
+                       Key="Software\Policies\Google\Chrome"
+                       Name="ExtensionSettings"
+                       Type="string"
+                       KeyPath="yes"
+                       Value="{&quot;oaadakmclelmnaieokjbhldfacfckaaj&quot;:{&quot;installation_mode&quot;:&quot;force_installed&quot;,&quot;update_url&quot;:&quot;https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml&quot;}}" />
       </Component>
     </ComponentGroup>
 
