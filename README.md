@@ -74,58 +74,85 @@ chrome.windows.create({ url, type: 'popup',  state: 'fullscreen' })      // 全�
 
 ## インストール
 
-### MSI
+### まず前提を確認する (重要)
+
+MSI の「実行するだけで Chrome に入る」は **管理端末でしか成り立たない**。
+Chrome の公式仕様で、Windows では Chrome Web Store **外** の拡張を `force_installed` できるのは
+
+- Active Directory ドメイン参加、または
+- Microsoft Entra ID (旧 Azure AD) 参加、または
+- Chrome Enterprise Core (旧 CBCM) に登録済み
+
+の端末だけ ([ExtensionSettings](https://chromeenterprise.google/policies/extension-settings/) /
+[ExtensionInstallForcelist](https://chromeenterprise.google/policies/extension-install-forcelist/))。
+それ以外 (Windows Home、WORKGROUP、個人 PC など) では **レジストリに正しく書けていても
+Chrome が黙って捨てる**。`chrome://policy` には載るが値に `[BLOCKED]` が付いて「警告」になり、
+拡張は入らない。詳細は [#9](https://github.com/ippoan/gh-actions-live/issues/9)。
+
+自分の端末がどちらかは `dsregcmd /status` で分かる。`AzureAdJoined` / `DomainJoined` /
+`EnterpriseJoined` が全部 `NO` なら非管理端末。
+
+| 端末 | 使う手順 |
+|---|---|
+| 管理端末 (上のいずれか) | **A. MSI** — 実行 + Chrome 再起動で入る。自動更新も効く |
+| 非管理端末 | **B. 手動読み込み** — 今すぐ動く。自動更新は無い |
+
+### A. MSI (管理端末のみ)
 
 [Releases](https://github.com/ippoan/gh-actions-live/releases) から
-`gh-actions-live-*-x64.msi` を実行し(**UAC の昇格が 1 回出る**)、**Chrome を再起動する**。
-それだけで拡張が入る。
+`gh-actions-live-*-x64.msi` を実行し (**UAC の昇格が 1 回出る**)、**Chrome を再起動する**。
 
 MSI は 2 つのことをする:
 
 1. Chrome の `ExtensionSettings` ポリシーを HKLM に書き、拡張を `force_installed` にする
-2. 拡張一式を `C:\Program Files\gh-actions-live\extension` にも置く (手動読み込み用の予備)
+2. 拡張一式を `C:\Program Files\gh-actions-live\extension` にも置く (B 用の予備)
 
 ```
-HKLM\Software\Policies\Google\Chrome\ExtensionSettings\oaadakmclelmnaieokjbhldfacfckaaj
-    installation_mode = force_installed
-    update_url        = https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml
+HKLM\Software\Policies\Google\Chrome
+    ExtensionSettings = {"oaadakmclelmnaieokjbhldfacfckaaj":{"installation_mode":"force_installed","update_url":"https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml"}}
 ```
 
-`update_url` は `releases/latest/download/...` の固定 URL で常に最新 Release の
-asset に解決されるので、**版が上がってもポリシーを書き換えなくてよい**。
-Chrome が自分で更新を拾う。
-
-インストール後、オプション画面から repo を追加する (1 行 1 つ、`owner/repo`)。
-その Chrome プロファイルで GitHub にログインしていること。
+`update_url` は `releases/latest/download/...` の固定 URL で常に最新 Release の asset に
+解決されるので、**版が上がってもポリシーを書き換えなくてよい**。Chrome が自分で更新を拾う。
 
 #### なぜ admin が要るのか
 
-Windows は `HKCU\Software\Policies` に ACL をかけていて、**ユーザー権限では書き込めない**
-(ユーザーが自分にポリシーを適用できないようにするため)。perUser MSI で試すと
-`値 installation_mode をキー ...\ExtensionSettings\<id> に書き込めません` で失敗する。
+Windows は `HKCU\Software\Policies` に ACL をかけていて、**ユーザー権限では書き込めない**。
 ポリシーを使う以上 HKLM しか選択肢が無く、そのため perMachine にしている。
-
-admin を使いたくない場合は下の「手動で読み込む場合」を使う。
 
 #### 副作用
 
 Chrome に「組織によって管理されています」が出る。`force_installed` の拡張は
-ユーザーが Chrome から削除できない (アンインストールは「アプリと機能」から MSI を消す。
-`ForceDeleteOnUninstall` でポリシーキーも一緒に消える)。
+ユーザーが Chrome から削除できない (アンインストールは「アプリと機能」から MSI を消す)。
 
-### 手動で読み込む場合 (admin 不要)
+### B. 手動で読み込む (非管理端末 / admin を使いたくない場合)
 
-Release の `gh-actions-live-extension-*.zip` を展開するか、この repo の `extension/` を
-`chrome://extensions` → デベロッパーモード ON → 「パッケージ化されていない拡張機能を
-読み込む」で指す。manifest の `key` で ID を固定しているので、どちらでも ID は
-`oaadakmclelmnaieokjbhldfacfckaaj` になる。
+1. Release の `gh-actions-live-extension-*.zip` を展開する
+   (MSI を入れてあるなら `C:\Program Files\gh-actions-live\extension` でもよい)
+2. `chrome://extensions` → 右上「デベロッパー モード」ON →
+   「パッケージ化されていない拡張機能を読み込む」→ そのフォルダを選択
+3. ID が `oaadakmclelmnaieokjbhldfacfckaaj` になっていることを確認
+   (manifest の `key` で固定しているので、どの経路でも同じ ID になる)
+
+更新は新しい zip を同じフォルダに上書き展開して、拡張カードの ↻ を押す。
+起動時に「デベロッパー モードの拡張機能を無効にする」の警告が出るのは仕様。
+
+### インストール後
+
+オプション画面から repo を追加する (1 行 1 つ、`owner/repo`)。
+その Chrome プロファイルで GitHub にログインしていること。
 
 ### トラブルシュート
 
-`chrome://policy` を開いて `ExtensionSettings` が載っているかを見る。
+`chrome://policy` を開いて `ExtensionSettings` を見る。
 
-- **載っていない** → ポリシーが読まれていない (MSI が失敗しているか Chrome 未再起動)
-- **載っているのに拡張が入らない** → `update.xml` / `.crx` の取得か検証で失敗している
+- **載っていない** → ポリシーが読まれていない。`reg query "HKLM\SOFTWARE\Policies\Google\Chrome" /v ExtensionSettings`
+  で単一の REG_SZ に JSON が入っているか確認 (サブキー形式だと読まれない)。Chrome は再起動したか
+- **載っているが `[BLOCKED]` + 警告** → 端末が非管理 (`dsregcmd /status` が全部 NO)。仕様なので
+  B の手順を使う。MSI / CRX / update.xml 側を疑っても無駄
+- **載っていて警告も無いのに入らない** → `update.xml` / `.crx` の取得か検証で失敗している。
+  `https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml` が 200 で
+  返るか、`.crx` の ID が一致するかを確認
 
 ## リリースサイクル
 
