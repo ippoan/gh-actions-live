@@ -99,12 +99,16 @@ Release の `gh-actions-live-extension-*.zip` を展開するか、この repo �
 
 ## リリースサイクル
 
-- **dev**: PR (non-draft) の CI が `dev-<run_number>` の prerelease を PR head に打つ
-  (`ci.yml` の dev-release job → `release.yml` を `workflow_call`)。
-  **merge を待たずに PR 時点の MSI を試せる。**
-- **stable**: `vX.Y.Z` tag push (非 prerelease = Latest)。
+バージョンは**自動採番**する。直近の `v*` tag の patch を +1、tag が無ければ `0.0.1` から。
 
-manifest の version は tag から stamp されるので、repo 側の値は開発用の目安。
+- **stable**: `main` への push で自動的に次の版を採番し、`vX.Y.Z` の Release を作る (Latest)
+- **dev**: PR (non-draft) の CI が `dev-<run_number>` の prerelease を PR head に打つ。
+  **merge を待たずに MSI を試せる。** 版は「その PR が出す予定の stable と同じ」
+- **手動**: 任意の版を切りたい場合は Release workflow を `workflow_dispatch` で
+  実行し、`version` に `X.Y.Z` を指定する
+
+tag は Release 作成時に打たれる。手で tag を push する経路は持たない (二重採番になるため)。
+manifest の version は tag から stamp されるので、repo に入っている値は開発用の目安。
 
 ## リポジトリ構成
 
