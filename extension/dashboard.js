@@ -19,6 +19,7 @@ const state = {
   runs: new Map(),           // "repo#checkSuiteId" -> run
   pending: new Map(),
   connected: false,
+  socketNote: '',
   lastLoadAt: null
 };
 
@@ -49,11 +50,14 @@ function parseRow(row) {
   };
 }
 
-async function fetchDoc(path) {
-  const r = await fetch(GH + path, {
-    credentials: 'include',
-    headers: { 'Accept': 'text/html', 'X-Requested-With': 'XMLHttpRequest' }
-  });
+// partial=true のときだけ XHR ヘッダを付ける。
+// フルページに付けると GitHub が断片だけ返し、<head> にある
+// link[rel="shared-web-socket"] が取れなくなる (行は断片に入るので
+// run 一覧は出るのに socket だけ繋がらない、という出方をする)。
+async function fetchDoc(path, { partial = false } = {}) {
+  const headers = { 'Accept': 'text/html' };
+  if (partial) headers['X-Requested-With'] = 'XMLHttpRequest';
+  const r = await fetch(GH + path, { credentials: 'include', headers });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return parser.parseFromString(await r.text(), 'text/html');
 }
@@ -81,8 +85,11 @@ function apply(repo, r) {
 async function loadRepo(repo) {
   const doc = await fetchDoc(`/${repo}/actions`);
   const link = doc.querySelector('link[rel="shared-web-socket"]');
-  if (link) state.socketUrl = link.getAttribute('href');
-  else log(`${repo}: shared-web-socket が無い (未ログイン?)`);
+  if (link) { state.socketUrl = link.getAttribute('href'); state.socketNote = ''; }
+  else {
+    state.socketNote = 'socket URL 無し (未ログイン?)';
+    log(`${repo}: link[rel=shared-web-socket] が無い — 未ログインか、断片だけが返っている`);
+  }
 
   ingestChannels(doc, repo);
 
@@ -99,7 +106,7 @@ async function loadRepo(repo) {
 
 // 1 run だけ軽く確定させる (約 10KB)
 async function refreshRun(repo, checkSuiteId) {
-  const doc = await fetchDoc(`/${repo}/actions/workflow-run/${checkSuiteId}`);
+  const doc = await fetchDoc(`/${repo}/actions/workflow-run/${checkSuiteId}`, { partial: true });
   const row = doc.querySelector('.Box-row[id^="check_suite_"]');
   if (!row) return [];
   ingestChannels(doc, repo);
@@ -201,7 +208,8 @@ function card(r) {
 function render() {
   $('live').className = 'live ' + (state.connected ? 'on' : 'off');
   $('meta').textContent = `${state.repos.length} repos · ${state.runs.size} runs · ${
-    state.connected ? 'socket 接続中' : '未接続'} · ${state.lastLoadAt ? new Date(state.lastLoadAt).toLocaleTimeString() : '—'}`;
+    state.connected ? 'socket 接続中' : ('未接続' + (state.socketNote ? ` (${state.socketNote})` : ''))} · ${
+    state.lastLoadAt ? new Date(state.lastLoadAt).toLocaleTimeString() : '—'}`;
 
   const byRepo = new Map(state.repos.map(r => [r, []]));
   for (const r of state.runs.values()) {
