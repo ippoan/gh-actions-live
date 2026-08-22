@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: JS 構文チェック
+        run: for f in extension/*.js; do node --check "$f"; done
+
+      - name: manifest.json の検証
+        run: |
+          node -e '
+            const m = JSON.parse(require("fs").readFileSync("extension/manifest.json"));
+            if (m.manifest_version !== 3) throw new Error("manifest_version must be 3");
+            if (!m.key) throw new Error("key が無い — 拡張 ID が固定されない");
+            for (const f of [m.background.service_worker, m.options_page, ...Object.values(m.icons)]) {
+              if (!require("fs").existsSync("extension/" + f)) throw new Error("missing: " + f);
+            }
+            console.log("manifest OK:", m.name, m.version);
+          '
+
+      - name: 参照されている HTML/JS が実在するか
+        run: |
+          set -euo pipefail
+          fail=0
+          for html in extension/*.html; do
+            grep -oE 'src="[^"]+"' "$html" | sed 's/src="//;s/"//' | while read -r s; do
+              [ -f "extension/$s" ] || { echo "::error file=$html::missing $s"; exit 1; }
+            done || fail=1
+          done
+          exit $fail
+
+  # PR (non-draft) から dev prerelease を出す。merge を待たずに MSI を試せる。
+  dev-release:
+    needs: check
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: dev-${{ github.run_number }}
+      target_commitish: ${{ github.event.pull_request.head.sha }}

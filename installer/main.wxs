@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  perUser MSI (admin 不要)。native host を持たないので、この MSI がやるのは
+    - 拡張一式を %LOCALAPPDATA%\Programs\gh-actions-live\extension に配置する
+    - MajorUpgrade で上書き更新する
+    - 「アプリと機能」に uninstall を出す
+  の 3 つ。Chrome への読み込みは「パッケージ化されていない拡張機能を読み込む」で
+  上記フォルダを指す (manifest の key で ID を固定しているので毎回同じ ID になる)。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="GitHub Actions Live"
+      Manufacturer="ippoan"
+      Version="$(var.Version)"
+      UpgradeCode="63AA7341-F629-4E7E-AC1D-CEDB0D51C6F5"
+      Scope="perUser"
+      Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="より新しいバージョンが既にインストールされています。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="gh-actions-live">
+          <Directory Id="EXTFOLDER" Name="extension" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="ExtensionFiles" Directory="EXTFOLDER">
+      <Files Include="..\extension\**" />
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="GitHub Actions Live">
+      <ComponentGroupRef Id="ExtensionFiles" />
+    </Feature>
+  </Package>
+</Wix>

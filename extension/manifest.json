@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "GitHub Actions Live",
+  "version": "0.3.0",
+  "description": "GitHub の Actions ページを起点に alive WebSocket を購読し、repo ごとの列 + run カードで並列表示するアプリ風ウィンドウ",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr1EjwabBqKr4ovUT9zkRDHsy+9lU0ca5294wo8aGAXhw97Ts+IozVQ4r1nSYehJ1SW3BQ7PHFHeTiI7Q39RWDZIi+A2HRsBXgc1yQcFN6baqqnIYVXL2tsUUNYf4tDVRbXyxntzk0tnu78Yxc3BgTlxKDacZWGtpjYVX1fLjEM1HV+BdyxjIzLra5W41Xi+pq23stbYjbjrSZFLSGIUhAypKwg1Ha4/Oh6M5Ot5GZKN63TeXzxl7D2OXcO1p+oh7huKHm22N99STcJnxtMnEdatamVl55ILjkdSzQ8EjdEiCitVPb8s16jVLGsRmV9VujWxcN2OLpdWhRkXU5AOqIQIDAQAB",
+  "permissions": [
+    "storage",
+    "notifications",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://github.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "GitHub Actions Live",
+    "default_icon": "icon128.png"
+  },
+  "icons": {
+    "128": "icon128.png"
+  }
+}
