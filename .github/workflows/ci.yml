@@ -20,6 +20,9 @@ jobs:
       - name: JS 構文チェック
         run: for f in extension/*.js; do node --check "$f"; done
 
+      - name: 単体テスト (alive の再接続 watchdog / relay の握手タイムアウト)
+        run: npm test
+
       - name: manifest.json の検証
         run: |
           node -e '

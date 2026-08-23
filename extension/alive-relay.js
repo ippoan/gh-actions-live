@@ -8,56 +8,115 @@
 //
 // 役割は socket を持つことだけ。ページ取得 (スナップショット) と描画は
 // これまでどおりダッシュボード側が行い、購読トークンはここへ渡される。
+//
+// 二重注入の防止: manifest の content_scripts に加えて background が
+// chrome.scripting.executeScript で入れ直すことがある (拡張更新直後など)。
+// 同じ isolated world に 2 つ目が入ると、ダッシュボードが話す instance と
+// socket を持つ instance が食い違う (#25 の 3)。先頭でグローバルの印を見て 2 回目は何もしない。
+(() => {
+  if (globalThis.__ghAliveRelay) return;
+  const relay = globalThis.__ghAliveRelay = { instance: Math.random().toString(36).slice(2, 8), loadedAt: Date.now() };
 
-let ws = null;
-let wantUrl = '';
-let tokens = [];
+  // 握手 (CONNECTING) がこれ以上続いたら諦めて閉じ、error として報告する。
+  // onopen も onclose も来ないまま固まると誰も再接続しないため (#25 の 1)。
+  const HANDSHAKE_MS = 15000;
 
-function post(msg) { try { chrome.runtime.sendMessage({ target: 'background', ...msg }); } catch {} }
+  let ws = null;
+  let wantUrl = '';
+  let tokens = [];
+  let connectingSince = 0;
+  let handshakeTimer = null;
 
-function subscribe() {
-  if (ws?.readyState !== WebSocket.OPEN || !tokens.length) return;
-  const subscribe = {};
-  for (const t of tokens) subscribe[t] = null;
-  ws.send(JSON.stringify({ subscribe }));
-  post({ type: 'alive-status', state: 'subscribed', count: tokens.length });
-}
+  function post(msg) { try { chrome.runtime.sendMessage({ target: 'background', instance: relay.instance, ...msg }); } catch {} }
 
-function connect(url, newTokens) {
-  if (Array.isArray(newTokens) && newTokens.length) tokens = newTokens;
-  if (url) wantUrl = url;
-  if (!wantUrl) return;
-
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    subscribe();
-    return;
+  function subscribe() {
+    if (ws?.readyState !== WebSocket.OPEN || !tokens.length) return;
+    const subscribe = {};
+    for (const t of tokens) subscribe[t] = null;
+    ws.send(JSON.stringify({ subscribe }));
+    post({ type: 'alive-status', state: 'subscribed', count: tokens.length });
   }
-  let sock;
-  try { sock = new WebSocket(wantUrl); }
-  catch (e) { post({ type: 'alive-status', state: 'error', error: String(e) }); return; }
-  ws = sock;
-  post({ type: 'alive-status', state: 'connecting' });
 
-  sock.onopen = () => { post({ type: 'alive-status', state: 'open' }); subscribe(); };
-  sock.onmessage = (e) => {
-    const text = String(e.data);
-    if (text.includes('"ack"')) { post({ type: 'alive-status', state: 'ack', sample: text.slice(0, 200) }); return; }
-    post({ type: 'alive-message', data: text.slice(0, 4000) });
-  };
-  sock.onclose = (e) => {
-    if (ws === sock) ws = null;
-    post({ type: 'alive-status', state: 'closed', code: e.code, reason: e.reason });
-  };
-  sock.onerror = () => post({ type: 'alive-status', state: 'error' });
-}
+  // 自分で閉じる。onclose には byUs を付けて報告し、ダッシュボード側が
+  // 「切断 = 失敗」としてバックオフを積まないようにする。
+  function closeSocket(reason) {
+    clearTimeout(handshakeTimer); handshakeTimer = null;
+    const sock = ws;
+    ws = null;
+    if (!sock) return false;
+    sock.__byUs = reason || 'close';
+    try { sock.close(); } catch {}
+    return true;
+  }
 
-chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
-  if (msg?.target !== 'alive-relay') return;
-  if (msg.type === 'connect') { connect(msg.url, msg.tokens); sendResponse({ ok: true }); }
-  if (msg.type === 'ping') sendResponse({ ok: true, readyState: ws?.readyState ?? null, tokens: tokens.length });
-  if (msg.type === 'close') { try { ws?.close(); } catch {} ws = null; sendResponse({ ok: true }); }
-  return true;
-});
+  function connect(url, newTokens) {
+    if (Array.isArray(newTokens) && newTokens.length) tokens = newTokens;
+    if (url) wantUrl = url;
+    if (!wantUrl) { post({ type: 'alive-status', state: 'error', error: 'no socket url' }); return; }
 
-// 読み込まれたことを知らせる。background が socket URL とトークンを送ってくる。
-post({ type: 'alive-ready', href: location.href });
+    if (ws?.readyState === WebSocket.OPEN) { subscribe(); return; }
+    if (ws?.readyState === WebSocket.CONNECTING) {
+      // 黙って return しない。今の状態を返してダッシュボードの watchdog に判断させる
+      post({ type: 'alive-status', state: 'connecting', readyState: ws.readyState, sinceMs: Date.now() - connectingSince });
+      return;
+    }
+    // CLOSING / CLOSED の残骸があれば捨てる
+    closeSocket('stale');
+
+    let sock;
+    try { sock = new WebSocket(wantUrl); }
+    catch (e) { post({ type: 'alive-status', state: 'error', error: String(e) }); return; }
+    ws = sock;
+    connectingSince = Date.now();
+    post({ type: 'alive-status', state: 'connecting', readyState: sock.readyState, sinceMs: 0 });
+
+    clearTimeout(handshakeTimer);
+    handshakeTimer = setTimeout(() => {
+      handshakeTimer = null;
+      if (ws !== sock || sock.readyState !== WebSocket.CONNECTING) return;
+      post({ type: 'alive-status', state: 'error', error: `handshake timeout ${HANDSHAKE_MS / 1000}s` });
+      closeSocket('handshake-timeout');
+    }, HANDSHAKE_MS);
+
+    sock.onopen = () => {
+      clearTimeout(handshakeTimer); handshakeTimer = null;
+      post({ type: 'alive-status', state: 'open' });
+      subscribe();
+    };
+    sock.onmessage = (e) => {
+      const text = String(e.data);
+      if (text.includes('"ack"')) { post({ type: 'alive-status', state: 'ack', sample: text.slice(0, 200) }); return; }
+      post({ type: 'alive-message', data: text.slice(0, 4000) });
+    };
+    sock.onclose = (e) => {
+      if (ws === sock) { ws = null; clearTimeout(handshakeTimer); handshakeTimer = null; }
+      post({ type: 'alive-status', state: 'closed', code: e.code, reason: e.reason, byUs: sock.__byUs || null });
+    };
+    sock.onerror = () => { if (ws === sock) post({ type: 'alive-status', state: 'error' }); };
+  }
+
+  function diag() {
+    return {
+      ok: true,
+      instance: relay.instance,
+      readyState: ws?.readyState ?? null,
+      tokens: tokens.length,
+      hasUrl: !!wantUrl,
+      connectingMs: ws?.readyState === WebSocket.CONNECTING ? Date.now() - connectingSince : null,
+      handshakeTimer: !!handshakeTimer,
+      href: location.href
+    };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
+    if (msg?.target !== 'alive-relay') return;
+    if (msg.type === 'connect') { connect(msg.url, msg.tokens); sendResponse(diag()); }
+    else if (msg.type === 'ping') sendResponse(diag());
+    else if (msg.type === 'close') { const had = closeSocket(msg.reason || 'close'); sendResponse({ ...diag(), closed: had }); }
+    else sendResponse({ ok: false, error: 'unknown type: ' + msg.type });
+    return true;
+  });
+
+  // 読み込まれたことを知らせる。background が socket URL とトークンを送ってくる。
+  post({ type: 'alive-ready', href: location.href });
+})();

@@ -47,7 +47,17 @@ async function findGithubTab() {
       if (r?.ok) return t.id;
     } catch { /* content script 未注入 */ }
   }
-  return tabs[0]?.id ?? null;
+  // メモリセーバーで discard されたタブは content script ごと消えている。生きているタブを優先
+  return (tabs.find(t => !t.discarded) ?? tabs[0])?.id ?? null;
+}
+
+// タブの読み込み完了 (= manifest の content script 注入) を待つ
+function waitTabComplete(id, ms = 15000) {
+  return new Promise(res => {
+    const done = (tid, info) => { if (tid === id && info.status === 'complete') { chrome.tabs.onUpdated.removeListener(done); res(true); } };
+    chrome.tabs.onUpdated.addListener(done);
+    setTimeout(() => { chrome.tabs.onUpdated.removeListener(done); res(false); }, ms);
+  });
 }
 
 // socket を持たせる github.com のタブを用意する。無ければ「監視対象 repo の Actions ページ」を
@@ -66,18 +76,56 @@ async function ensureAliveTab() {
     const url = repos.length ? `https://github.com/${repos[0]}/actions` : 'https://github.com/';
     const tab = await chrome.tabs.create({ url, pinned: true, active: false });
     id = tab.id;
-    await new Promise(res => {                       // content script の注入を待つ
-      const done = (tid, info) => { if (tid === id && info.status === 'complete') { chrome.tabs.onUpdated.removeListener(done); res(); } };
-      chrome.tabs.onUpdated.addListener(done);
-      setTimeout(() => { chrome.tabs.onUpdated.removeListener(done); res(); }, 15000);
-    });
+    await waitTabComplete(id);                       // content script の注入を待つ
   } else {
-    // 既存タブに content script が無ければ入れる (拡張の更新直後など)
-    try { await chrome.scripting.executeScript({ target: { tabId: id }, files: ['alive-relay.js'] }); } catch {}
+    let tab = null;
+    try { tab = await chrome.tabs.get(id); } catch {}
+    if (tab?.discarded) {
+      // discard されたタブには script を入れられない。読み込み直して manifest の content script を待つ
+      try { await chrome.tabs.reload(id); await waitTabComplete(id); } catch {}
+    } else {
+      // 既存タブに content script が無ければ入れる (拡張の更新直後など)。
+      // alive-relay.js は先頭の __ghAliveRelay で二重実行を防ぐので、入っていても害は無い
+      try { await chrome.scripting.executeScript({ target: { tabId: id }, files: ['alive-relay.js'] }); } catch {}
+    }
   }
   aliveTabId = id;
   return id;
 }
+
+// relay の socket を閉じさせる。タブが無ければ何もしない (閉じるものが無い)
+async function aliveClose(reason = 'background') {
+  if (aliveTabId == null) return { ok: true, closed: false, note: 'no alive tab' };
+  try {
+    const r = await chrome.tabs.sendMessage(aliveTabId, { target: 'alive-relay', type: 'close', reason });
+    return { ok: true, ...r };
+  } catch (e) {
+    aliveTabId = null;
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+// relay に ping して readyState / tokens を聞く (診断用)
+async function alivePing() {
+  if (aliveTabId == null) return null;
+  try { return await chrome.tabs.sendMessage(aliveTabId, { target: 'alive-relay', type: 'ping' }); }
+  catch (e) { return { ok: false, error: String(e?.message || e) }; }
+}
+
+// alive まわりの診断。status コマンドと dashboard の alive-state で返す (#25)
+async function aliveDiag() {
+  const relay = await alivePing();
+  let tab = null;
+  if (aliveTabId != null) { try { const t = await chrome.tabs.get(aliveTabId); tab = { id: t.id, url: t.url, discarded: !!t.discarded, status: t.status }; } catch {} }
+  return {
+    tabId: aliveTabId, tab,
+    state: aliveState,                                 // 最後に relay から届いた alive-status
+    cfg: aliveCfg ? { hasUrl: !!aliveCfg.url, tokens: aliveCfg.tokens?.length ?? 0 } : null,
+    relay                                              // relay の ping 結果 (readyState: 0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED)
+  };
+}
+
+const isDashboardOpen = async () => (await chrome.tabs.query({ url: chrome.runtime.getURL(DASH) })).length > 0;
 
 async function aliveConnect(cfg) {
   if (cfg) aliveCfg = cfg;
@@ -104,7 +152,7 @@ const bridge = createBridge({
   getUrl: async () => (await chrome.storage.local.get('bridgeUrl')).bridgeUrl || '',
   log: (...a) => console.log('[bg]', ...a),
   onCommand: async (msg) => {
-    const r = await handleCommand(msg);
+    const r = await handleCommand(msg, 'bridge');
     bridge.send({ type: 'ack', command: msg.command, ...r });
   }
 });
@@ -129,9 +177,26 @@ async function runUpdate() {
 }
 
 // ---- 設定 / 操作の共通ハンドラ (bridge / github.com / ダッシュボードから同じものを呼ぶ) ----
-async function handleCommand(msg) {
+// via: 'bridge' | 'external' (github.com タブ) | 'dashboard'
+async function handleCommand(msg, via = 'external') {
   switch (msg.command) {
     case 'open-dashboard': return { ok: true, windowId: await openDashboard({ mode: msg.mode || 'popup' }) };
+    case 'status':
+      // ダッシュボードが開いていればそちらも {type:'status'} を返す。こちらは background 視点
+      return { ok: true, version: chrome.runtime.getManifest().version, dashboardOpen: await isDashboardOpen(), alive: await aliveDiag() };
+    case 'alive-reset': {
+      // 強制再接続 (#25)。経路 (bridge / github.com / ダッシュボード) によらずここが受け口。
+      // ダッシュボードが開いていれば、トークンを持つそちらに close → connect させる
+      // (ダッシュボードは bridge から同じコマンドを直接受けても何もしない。二重に張り直さないため)。
+      // 閉じていれば relay の socket を閉じて開き直す (boot が connect する)。
+      if (await isDashboardOpen()) {
+        relayToDashboard({ type: 'alive-reset', reason: `alive-reset via ${via}` });
+        return { ok: true, delegated: 'dashboard', via };
+      }
+      const closed = await aliveClose('alive-reset');
+      await openDashboard({ mode: msg.mode || 'popup' });
+      return { ok: true, closed, reopened: true, via };
+    }
     case 'check-update':   await checkDiskVersion(); return { ok: true };
     case 'update':         return await runUpdate();
     case 'native-ping':    return await nativeCall('ping');
@@ -154,7 +219,7 @@ async function handleCommand(msg) {
 // origin を厳密に見る (github.com 以外は manifest で弾かれるが二重に)。
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
   if (!sender.origin || sender.origin !== 'https://github.com') { sendResponse({ ok: false, error: 'origin' }); return; }
-  handleCommand(msg || {}).then(sendResponse, e => sendResponse({ ok: false, error: String(e) }));
+  handleCommand(msg || {}, 'external').then(sendResponse, e => sendResponse({ ok: false, error: String(e) }));
   return true;
 });
 
@@ -213,14 +278,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     aliveConnect({ url: msg.url, tokens: msg.tokens }).then(sendResponse);
     return true;
   }
-  if (msg.type === 'alive-state') { sendResponse({ ok: true, tabId: aliveTabId, ...aliveState }); return true; }
+  if (msg.type === 'alive-close') { aliveClose(msg.reason || 'dashboard').then(sendResponse); return true; }
+  if (msg.type === 'alive-state') { aliveDiag().then(d => sendResponse({ ok: true, ...d })); return true; }
 
   if (msg.type === 'open-dashboard') {
     openDashboard({ mode: msg.mode }).then(id => sendResponse({ ok: true, windowId: id }));
     return true;
   }
   if (msg.type === 'command') {
-    handleCommand(msg).then(sendResponse, e => sendResponse({ ok: false, error: String(e) }));
+    handleCommand(msg, 'dashboard').then(sendResponse, e => sendResponse({ ok: false, error: String(e) }));
     return true;
   }
 
