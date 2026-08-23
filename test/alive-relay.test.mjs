@@ -230,3 +230,24 @@ test('張り直すと lastFrameAt はリセットされる (前の socket の受
   assert.equal(p.lastFrameAt, null);
   assert.equal(p.frames, 0);
 });
+
+test('置き換わった後に届く古い socket の close は stale 付きで報告する (#28 の実機検証)', async () => {
+  const env = makeEnv(); env.run();
+  await env.send({ target: 'alive-relay', type: 'connect', url: 'wss://alive/x', tokens: ['a'] });
+  const first = env.sockets[0];
+  first._open();
+  // 張り直し: close を頼んでから新しい socket が open する (close イベントはまだ来ていない)
+  await env.send({ target: 'alive-relay', type: 'close', reason: 'idle' });
+  await env.send({ target: 'alive-relay', type: 'connect' });
+  const second = env.sockets[1];
+  second._open();
+  env.advance(2200);
+  first._close(1005);                                  // 遅れて届いた前の socket の onclose
+  const closed = env.posted.filter(p => p.type === 'alive-status' && p.state === 'closed').at(-1);
+  assert.equal(closed.stale, true);
+  assert.equal(closed.byUs, 'idle');
+  // 今の socket が閉じたときは stale にならない
+  second._close(1006);
+  const now = env.posted.filter(p => p.type === 'alive-status' && p.state === 'closed').at(-1);
+  assert.equal(now.stale, false);
+});

@@ -97,8 +97,13 @@
       post({ type: 'alive-message', data: text.slice(0, 4000), lastFrameAt, frames });
     };
     sock.onclose = (e) => {
+      // 既に **別の socket に置き換わった後**に届いた後片付け。close() を頼んでから
+      // onclose が来るまでは数秒あり、その間に張り直しが成功していることがある (実機で 2.2s)。
+      // これを「今の状態」として報告すると、ダッシュボードが接続済みを未接続で上書きして
+      // OPEN のまま固まる (#28 の実機検証で発生)。stale を付けて区別する
+      const stale = ws !== sock && ws != null;
       if (ws === sock) { ws = null; clearTimeout(handshakeTimer); handshakeTimer = null; }
-      post({ type: 'alive-status', state: 'closed', code: e.code, reason: e.reason, byUs: sock.__byUs || null });
+      post({ type: 'alive-status', state: 'closed', code: e.code, reason: e.reason, byUs: sock.__byUs || null, stale });
     };
     sock.onerror = () => { if (ws === sock) post({ type: 'alive-status', state: 'error' }); };
   }
