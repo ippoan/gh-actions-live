@@ -190,7 +190,7 @@ Claude in Chrome は github.com のタブで JS を実行できるので、**設
 chrome.runtime.sendMessage('oaadakmclelmnaieokjbhldfacfckaaj',
   { command: 'set-config', repos: ['owner/repo'], bridgeUrl: 'ws://host:8799', notify: false },
   r => console.log(r));
-// command: get-config / open-dashboard / update / check-update / native-ping も同じ経路で使える
+// command: get-config / open-dashboard / update / check-update / native-ping / status / alive-reset も同じ経路で使える
 ```
 
 ## Claude Code への途中通知 (bridge)
@@ -211,6 +211,12 @@ Windows Chrome 拡張  ──ws://<linux>:8799──▶  ws-bridge.mjs  ──st
   それを通知に変える (`Monitor({command: "node bridge/ws-bridge.mjs 8799", persistent: true})`)
 - Linux → 拡張: `curl -X POST localhost:8799/cmd -d '{"command":"open-dashboard","mode":"popup"}'`
   でウィンドウを遠隔で開ける。`refresh` / `snapshot` も受ける
+- 診断: `curl -X POST localhost:8799/cmd -d '{"command":"status"}'`。ダッシュボードからは
+  `{"type":"status", alive:{connected, fails, lastState, watchdogArmed, reconnectPending, background:{state, relay:{readyState, tokens}}}}`、
+  service worker からは `{"type":"ack","command":"status", alive:{tab, state, relay}}` が返る
+  (`relay.readyState` は 0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED、null = socket 無し)
+- 強制再接続: `curl -X POST localhost:8799/cmd -d '{"command":"alive-reset"}'`。relay の socket を閉じ、
+  ダッシュボードが張り直す (閉じていれば開く)。`status` が `connected:false` のまま戻らないときに
 - 拡張側は **設定画面の「Linux 側リレーの URL」** に `ws://<host>:8799` を入れる
 - service worker も 1 本張っていて、ダッシュボードが閉じていても `open-dashboard` を受けられる
   (リレーの 20 秒 ping → pong の往来で MV3 の service worker が生き続ける)

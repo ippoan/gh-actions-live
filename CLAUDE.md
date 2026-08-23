@@ -25,7 +25,9 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   拡張ページ (`chrome-extension://`) から張ると Origin で弾かれ握手直後に 1006。
   DNR の `modifyHeaders` では websocket 握手の Origin を変えられない (v0.0.19 で実測・失敗)。
   background が pinned タブを用意し、ダッシュボードは socket URL と購読トークンを渡すだけ
-- `dashboard.js`: alive 切断時の再接続は指数バックオフ。無条件に `boot()` を呼ぶと 5 秒周期ポーリングになる
+- `dashboard.js`: alive 切断時の再接続は指数バックオフ。無条件に `boot()` を呼ぶと 5 秒周期ポーリングになる。
+  再接続の判断は `alive-watchdog.js` (純粋モジュール・`npm test` で回る) に集約。connect を頼んだら必ず
+  watchdog を張る。「`closed`/`error` が来たときだけ再接続」に戻すと CONNECTING で固まって死ぬ (#25)
 - 非管理 Windows では HKLM の `ExtensionSettings` を Chrome が捨てる (仕様)。
   「MSI で入らない」は #9 を先に読む
 

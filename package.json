@@ -1,0 +1,9 @@
+{
+  "name": "gh-actions-live",
+  "private": true,
+  "type": "module",
+  "description": "テスト実行用。拡張本体は extension/ (Node の依存は無い)",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

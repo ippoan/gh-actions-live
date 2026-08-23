@@ -8,6 +8,7 @@
 
 import { createBridge } from './bridge-client.js';
 import { applySeedConfig } from './seed-config.js';
+import { createAliveWatchdog } from './alive-watchdog.js';
 
 const GH = 'https://github.com';
 const parser = new DOMParser();
@@ -21,8 +22,7 @@ const state = {
   repoByTopic: new Map(),    // topic -> "owner/repo"
   runs: new Map(),           // "repo#checkSuiteId" -> run
   pending: new Map(),
-  connected: false,
-  aliveBackoff: 4000, aliveFails: 0, aliveTimer: null,
+  connected: false,          // alive watchdog から同期される (render / status 用)
   socketNote: '',
   bridgeStatus: 'off', bridgeNote: '',
   lastLoadAt: null,
@@ -151,32 +151,33 @@ async function announce(events) {
 // (v0.0.19 の DNR による Origin 書き換えでも直らなかった)。
 // ここは socket URL と購読トークンを background に渡し、結果を受け取るだけ。
 function connect() {
-  if (!state.socketUrl) return;
+  if (!state.socketUrl) { alive.onConnectError('socket URL 無し'); return; }
   const tokens = [...state.tokenByTopic.values()];
-  chrome.runtime.sendMessage({ target: 'background', type: 'alive-connect', url: state.socketUrl, tokens })
-    .then(r => { if (!r?.ok) { state.socketNote = r?.error || 'タブに接続できない'; render(); } })
-    .catch(e => { state.socketNote = String(e); render(); });
+  return chrome.runtime.sendMessage({ target: 'background', type: 'alive-connect', url: state.socketUrl, tokens })
+    .then(r => { if (!r?.ok) alive.onConnectError(r?.error || 'タブに接続できない'); })
+    .catch(e => alive.onConnectError(e));
 }
+// relay の socket を閉じさせる (watchdog の張り直し / alive-reset の前段)
+function closeRelay() {
+  return chrome.runtime.sendMessage({ target: 'background', type: 'alive-close', reason: 'dashboard' }).catch(() => {});
+}
+
+// 再接続の判断は全部ここ (#25)。connect を頼んだら必ず N 秒の watchdog を張り、
+// open/subscribed/ack が来なければ close → バックオフ付きで張り直す。
+const alive = createAliveWatchdog({
+  connect, close: closeRelay, boot: () => boot(),
+  handshakeMs: 20000,            // relay 自身の握手タイムアウト (15s) より長く。先に relay が error を返す
+  log,
+  onChange: (st) => { state.connected = st.connected; state.socketNote = st.note; render(); }
+});
 
 // content script からのイベントは background 経由で届く
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.target !== 'dashboard') return;
 
-  if (msg.type === 'alive-status') {
-    state.connected = (msg.state === 'open' || msg.state === 'subscribed' || msg.state === 'ack');
-    state.socketNote = state.connected ? '' : (msg.state === 'closed' ? `切断 ${msg.code ?? ''}` : (msg.error || msg.state));
-    if (msg.state === 'closed' || msg.state === 'error') {
-      // タブ側で切れた。バックオフして張り直す (ページの取り直しは 5 回に 1 回)
-      state.aliveBackoff = Math.min((state.aliveBackoff || 4000) * 2, 5 * 60000);
-      state.aliveFails = (state.aliveFails || 0) + 1;
-      clearTimeout(state.aliveTimer);
-      state.aliveTimer = setTimeout(() => (state.aliveFails % 5 === 0 ? boot() : connect()), state.aliveBackoff);
-    } else if (state.connected) {
-      state.aliveBackoff = 4000; state.aliveFails = 0;
-    }
-    render();
-    return;
-  }
+  if (msg.type === 'alive-status') { alive.onStatus(msg); return; }
+  // background からの強制再接続 (bridge / github.com 経由の alive-reset)
+  if (msg.type === 'alive-reset') { alive.reset(msg.reason || 'alive-reset'); return; }
 
   if (msg.type === 'alive-message') {
     let m; try { m = JSON.parse(msg.data); } catch { return; }
@@ -190,7 +191,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       debounce(topic, () => refreshRun(repo, id).then(announce).catch(err => log('refreshRun', String(err))));
     } else {
       for (const rp of repo ? [repo] : state.repos) {
-        debounce('repo:' + rp, () => loadRepo(rp).then(evs => { announce(evs); connect(); })
+        debounce('repo:' + rp, () => loadRepo(rp).then(evs => { announce(evs); alive.ensure(); })
           .catch(err => log('loadRepo', String(err))), 1200);
       }
     }
@@ -292,15 +293,10 @@ const bridge = createBridge({
         break;
       }
       case 'snapshot': bridge.send({ type: 'snapshot', runs: snapshot() }); break;
-      case 'status':
-        // 診断用。alive socket の状態を Linux 側から見る
-        bridge.send({ type: 'status',
-          version: chrome.runtime.getManifest().version,
-          alive: { connected: state.connected, hasSocketUrl: !!state.socketUrl,
-                   subscribedTopics: state.tokenByTopic.size, note: state.socketNote,
-                   fails: state.aliveFails || 0 },
-          repos: state.repos, runs: state.runs.size, lastLoadAt: state.lastLoadAt,
-          bridge: state.bridgeStatus });
+      case 'status': sendStatus(); break;
+      case 'alive-reset':
+        // background が受け口 (同じコマンドを受けて、こちらへ {type:'alive-reset'} を転送してくる)。
+        // ここでも reset すると二重に close → connect になるので何もしない
         break;
       case 'open-dashboard':
         // 自分が開いている = もう開いている。前面に出すだけ background に頼む
@@ -311,6 +307,26 @@ const bridge = createBridge({
   }
 });
 chrome.storage.onChanged.addListener(c => { if (c.bridgeUrl) bridge.connect(); });
+
+// 診断用。alive socket の状態を Linux 側から見る。
+// ダッシュボード側 (watchdog) だけでなく background の aliveState と relay の ping
+// (readyState / tokens) も載せ、「CONNECTING で固まっている」のか「socket が無い」のかを区別できるようにする (#25)
+async function sendStatus() {
+  const bg = await chrome.runtime.sendMessage({ target: 'background', type: 'alive-state' }).catch(e => ({ ok: false, error: String(e) }));
+  const w = alive.snapshot();
+  bridge.send({ type: 'status',
+    version: chrome.runtime.getManifest().version,
+    alive: { connected: w.connected, hasSocketUrl: !!state.socketUrl,
+             subscribedTopics: state.tokenByTopic.size, note: w.note,
+             fails: w.fails, backoffMs: w.backoff,
+             lastState: w.lastState, lastStateAt: w.lastStateAt ? new Date(w.lastStateAt).toISOString() : null,
+             lastConnectAt: w.lastConnectAt ? new Date(w.lastConnectAt).toISOString() : null,
+             watchdogArmed: w.watchdogArmed, reconnectPending: w.reconnectPending,
+             nextRetryAt: w.nextRetryAt ? new Date(w.nextRetryAt).toISOString() : null,
+             background: bg },
+    repos: state.repos, runs: state.runs.size, lastLoadAt: state.lastLoadAt,
+    bridge: state.bridgeStatus });
+}
 
 /* ---------------- 版の表示 (自動更新は update.ps1 + background が行う) ---------------- */
 
@@ -347,7 +363,7 @@ async function boot() {
     catch (e) { log('loadRepo failed', repo, String(e)); }
   }
   render();
-  connect();
+  alive.onBoot();    // 未接続なら無条件で close → connect (CONNECTING で固まった relay もここで叩き直す)
   bridge.ensure();
 }
 
