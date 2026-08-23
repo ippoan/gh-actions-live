@@ -143,8 +143,11 @@ async function aliveConnect(cfg) {
 
 chrome.tabs.onRemoved.addListener(id => { if (id === aliveTabId) { aliveTabId = null; aliveState = { state: 'tab-closed' }; } });
 
-// content script からのイベントをダッシュボードへ中継する
-function relayToDashboard(msg) { chrome.runtime.sendMessage({ target: 'dashboard', ...msg }).catch(() => {}); }
+// content script からのイベントをダッシュボードへ中継する。
+// relay からの msg には target:'background' が付いているので、**target は spread の後で** 上書きする。
+// 逆 (`{ target:'dashboard', ...msg }`) だと target:'background' のまま届き、ダッシュボードは
+// 全部捨てる → alive-status も alive-message (push) も一度も届かず connected:false のまま (#25 の真因)
+function relayToDashboard(msg) { chrome.runtime.sendMessage({ ...msg, target: 'dashboard' }).catch(() => {}); }
 
 // ---- Linux 側リレー ----
 const bridge = createBridge({
