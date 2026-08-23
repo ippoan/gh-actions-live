@@ -180,8 +180,12 @@ const alive = createAliveWatchdog({
 });
 
 // content script からのイベントは background 経由で届く
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.target !== 'dashboard') return;
+
+  // 生存確認 (#30)。background の openDashboard が「URL は一致するが死んでいるタブ」を
+  // 見分けるために打つ。答えなければ同じウィンドウで読み込み直される
+  if (msg.type === 'ping') { sendResponse({ ok: true, version: chrome.runtime.getManifest().version }); return; }
 
   if (msg.type === 'alive-status') { alive.onStatus(msg); return; }
   // background からの強制再接続 (bridge / github.com 経由の alive-reset)
@@ -312,6 +316,10 @@ const bridge = createBridge({
         // background が受け口 (同じコマンドを受けて、こちらへ {type:'alive-reset'} を転送してくる)。
         // ここでも reset すると二重に close → connect になるので何もしない
         break;
+      case 'reload':
+        // 同上。reload は background に一本化してある (#30)。ここで runtime.reload()
+        // すると空ウィンドウが残る
+        break;
       case 'open-dashboard':
         // 自分が開いている = もう開いている。前面に出すだけ background に頼む
         chrome.runtime.sendMessage({ target: 'background', type: 'open-dashboard', mode: msg.mode }).catch(() => {});
@@ -399,13 +407,16 @@ $('update').addEventListener('click', async () => {
     btn.textContent = '更新 (失敗)'; alert('更新に失敗: ' + (r?.error || r?.output || '不明'));
   }
 });
-// 再読込 = 拡張ごと再起動する (ページ内の再取得ではなく)。chrome.runtime.reload() で
-// background も含めて立ち上げ直し、ディスク上に新版があればそれも拾う。
-// reopenDashboard を立てておくと background の onInstalled がこのウィンドウを開き直す。
+// 再読込 = 拡張ごと再起動する (ページ内の再取得ではなく)。background も含めて
+// 立ち上げ直し、ディスク上に新版があればそれも拾う。
+// **ここで chrome.runtime.reload() を呼んではいけない** (#30): ページは死ぬのに
+// ウィンドウは残り、開き直しで空ウィンドウが 1 枚増える。background に頼むと
+// reloadSelf がこのタブを閉じてから reload し、後で 1 枚だけ開き直す。
 $('reload').addEventListener('click', async () => {
   $('reload').disabled = true; $('reload').textContent = '再起動中…';
-  await chrome.storage.local.set({ reopenDashboard: true });
-  chrome.runtime.reload();
+  // このタブは background に閉じられるので、応答は返ってこなくてよい
+  chrome.runtime.sendMessage({ target: 'background', type: 'command', command: 'reload', reopen: true })
+    .catch(() => {});
 });
 chrome.storage.onChanged.addListener((c) => { if (c.repos) boot(); });
 
