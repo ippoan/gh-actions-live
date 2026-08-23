@@ -25,7 +25,12 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   拡張ページ (`chrome-extension://`) から張ると Origin で弾かれ握手直後に 1006。
   DNR の `modifyHeaders` では websocket 握手の Origin を変えられない (v0.0.19 で実測・失敗)。
   background が pinned タブを用意し、ダッシュボードは socket URL と購読トークンを渡すだけ
-- `dashboard.js`: alive 切断時の再接続は指数バックオフ。無条件に `boot()` を呼ぶと 5 秒周期ポーリングになる。
+- `dashboard.js`: alive 切断時の再接続は指数バックオフ。無条件に `boot()` を呼ぶと 5 秒周期ポーリングになる
+- **`connected:true` / `ws.send()` の成功は socket が生きている証明にならない** (#28)。half-open だと
+  readyState は OPEN のまま、send も例外を投げず、20 分 boot の購読し直しも成功して見える。
+  生死の判断材料は受信時刻だけ: relay の `lastFrameAt` / `sinceLastFrameMs`、watchdog の
+  `lastMessageAt` / `idleMs`。閾値 (`idleLimitMs`、既定 10 分) を超えたら `reset('idle')` で
+  close → connect して確かめる。status に全部載っている。
   再接続の判断は `alive-watchdog.js` (純粋モジュール・`npm test` で回る) に集約。connect を頼んだら必ず
   watchdog を張る。「`closed`/`error` が来たときだけ再接続」に戻すと CONNECTING で固まって死ぬ (#25)
 - `background.js` の `relayToDashboard` は `{ ...msg, target: 'dashboard' }` (target を後勝ち)。relay の msg には

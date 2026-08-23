@@ -184,3 +184,49 @@ test('URL 無しの connect は error を返す', async () => {
   assert.equal(env.sockets.length, 0);
   assert.ok(env.posted.some(p => p.state === 'error' && /no socket url/.test(p.error)));
 });
+
+/* ---- lastFrameAt (#28) ---- */
+// half-open では readyState が OPEN のままなので、生死の判断材料はフレームの受信時刻だけ。
+
+test('フレームを受け取ると lastFrameAt / frames が進み、ping で見える', async () => {
+  const env = makeEnv(); env.run();
+  await env.send({ target: 'alive-relay', type: 'connect', url: 'wss://alive/x', tokens: ['a'] });
+  env.sockets[0]._open();
+  let p = await env.send({ target: 'alive-relay', type: 'ping' });
+  assert.equal(p.lastFrameAt, null);                 // まだ何も来ていない
+  assert.equal(p.sinceLastFrameMs, null);
+  assert.equal(p.frames, 0);
+
+  env.advance(5000);
+  env.sockets[0]._msg('{"e":"ack","off":"1-0","health":true}');
+  env.advance(1000);
+  p = await env.send({ target: 'alive-relay', type: 'ping' });
+  assert.equal(p.lastFrameAt, 5000);
+  assert.equal(p.sinceLastFrameMs, 1000);
+  assert.equal(p.frames, 1);
+  // ack の alive-status にも載る (ダッシュボードが idle を測り直す材料)
+  const ack = env.posted.filter(x => x.type === 'alive-status' && x.state === 'ack').at(-1);
+  assert.equal(ack.lastFrameAt, 5000);
+
+  env.advance(2000);
+  env.sockets[0]._msg('{"ch":"topic","e":"update"}');
+  p = await env.send({ target: 'alive-relay', type: 'ping' });
+  assert.equal(p.lastFrameAt, 8000);
+  assert.equal(p.sinceLastFrameMs, 0);
+  assert.equal(p.frames, 2);
+  const push = env.posted.filter(x => x.type === 'alive-message').at(-1);
+  assert.equal(push.lastFrameAt, 8000);
+});
+
+test('張り直すと lastFrameAt はリセットされる (前の socket の受信を引き継がない)', async () => {
+  const env = makeEnv(); env.run();
+  await env.send({ target: 'alive-relay', type: 'connect', url: 'wss://alive/x', tokens: ['a'] });
+  env.sockets[0]._open();
+  env.sockets[0]._msg('{"e":"ack"}');
+  await env.send({ target: 'alive-relay', type: 'close', reason: 'idle' });
+  await env.send({ target: 'alive-relay', type: 'connect' });
+  assert.equal(env.sockets.length, 2);
+  const p = await env.send({ target: 'alive-relay', type: 'ping' });
+  assert.equal(p.lastFrameAt, null);
+  assert.equal(p.frames, 0);
+});

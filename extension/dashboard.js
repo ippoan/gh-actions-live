@@ -24,6 +24,7 @@ const state = {
   pending: new Map(),
   connected: false,          // alive watchdog から同期される (render / status 用)
   socketNote: '',
+  lastMessageAt: null,       // alive から最後にフレームを受けた時刻 (ヘッダの「最終受信」)
   bridgeStatus: 'off', bridgeNote: '',
   lastLoadAt: null,
   // 初回スナップショットを取り終えた repo。ここに入るまで通知を出さない
@@ -167,8 +168,15 @@ function closeRelay() {
 const alive = createAliveWatchdog({
   connect, close: closeRelay, boot: () => boot(),
   handshakeMs: 20000,            // relay 自身の握手タイムアウト (15s) より長く。先に relay が error を返す
+  // 繋がった後の見張り (#28)。alive は定期フレームを送ってこないことがあるので、
+  // 「無受信 = 死んでいる」と決めつけず **張り直して確かめる** 用の閾値。
+  // 20 分ごとの boot より短く、通常の push 間隔より十分長く取る
+  idleLimitMs: 10 * 60000,
   log,
-  onChange: (st) => { state.connected = st.connected; state.socketNote = st.note; render(); }
+  onChange: (st) => {
+    state.connected = st.connected; state.socketNote = st.note; state.lastMessageAt = st.lastMessageAt;
+    render();
+  }
 });
 
 // content script からのイベントは background 経由で届く
@@ -180,6 +188,8 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'alive-reset') { alive.reset(msg.reason || 'alive-reset'); return; }
 
   if (msg.type === 'alive-message') {
+    alive.onMessage(msg);            // 受信したことが socket が生きている唯一の証拠 (#28)
+    state.lastMessageAt = alive.state.lastMessageAt;
     let m; try { m = JSON.parse(msg.data); } catch { return; }
     chrome.storage.local.get('rawSamples').then(({ rawSamples = [] }) =>
       chrome.storage.local.set({ rawSamples: [String(msg.data).slice(0, 1000), ...rawSamples].slice(0, 50) }));
@@ -230,9 +240,13 @@ function card(r) {
 
 function render() {
   $('live').className = 'live ' + (state.connected ? 'on' : 'off');
+  // 「接続中」だけでは half-open を見抜けない (#28)。最後にフレームを受けた時刻を必ず併記する
+  const recv = state.lastMessageAt != null
+    ? `最終受信 ${new Date(state.lastMessageAt).toLocaleTimeString()} (${ago(state.lastMessageAt)})`
+    : '最終受信 —';
   $('meta').textContent = `${state.repos.length} repos · ${state.runs.size} runs · ${
     state.connected ? 'socket 接続中' : ('未接続' + (state.socketNote ? ` (${state.socketNote})` : ''))} · ${
-    state.lastLoadAt ? new Date(state.lastLoadAt).toLocaleTimeString() : '—'}`;
+    recv} · ${state.lastLoadAt ? new Date(state.lastLoadAt).toLocaleTimeString() : '—'}`;
 
   const byRepo = new Map(state.repos.map(r => [r, []]));
   for (const r of state.runs.values()) {
@@ -321,7 +335,10 @@ async function sendStatus() {
              fails: w.fails, backoffMs: w.backoff,
              lastState: w.lastState, lastStateAt: w.lastStateAt ? new Date(w.lastStateAt).toISOString() : null,
              lastConnectAt: w.lastConnectAt ? new Date(w.lastConnectAt).toISOString() : null,
-             watchdogArmed: w.watchdogArmed, reconnectPending: w.reconnectPending,
+             // 「繋がっている」の実体。idleMs が idleLimitMs に近いまま伸びるなら half-open (#28)
+             lastMessageAt: w.lastMessageAt != null ? new Date(w.lastMessageAt).toISOString() : null,
+             idleMs: w.idleMs, idleLimitMs: w.idleLimitMs, idleResets: w.idleResets,
+             watchdogArmed: w.watchdogArmed, idleArmed: w.idleArmed, reconnectPending: w.reconnectPending,
              nextRetryAt: w.nextRetryAt ? new Date(w.nextRetryAt).toISOString() : null,
              background: bg },
     repos: state.repos, runs: state.runs.size, lastLoadAt: state.lastLoadAt,

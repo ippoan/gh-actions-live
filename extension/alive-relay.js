@@ -26,6 +26,12 @@
   let tokens = [];
   let connectingSince = 0;
   let handshakeTimer = null;
+  // 最後に **フレームを受け取った** 時刻 (ack も push も込み)。socket ごとにリセットする。
+  // readyState が OPEN でも half-open (TCP が静かに死ぬ) だと send は通るのに何も返ってこない。
+  // 「生きているか」を言えるのはこれだけなので、diag と ack の報告に載せてダッシュボード側の
+  // idle watchdog の材料にする (#28)
+  let lastFrameAt = 0;
+  let frames = 0;
 
   function post(msg) { try { chrome.runtime.sendMessage({ target: 'background', instance: relay.instance, ...msg }); } catch {} }
 
@@ -68,6 +74,7 @@
     catch (e) { post({ type: 'alive-status', state: 'error', error: String(e) }); return; }
     ws = sock;
     connectingSince = Date.now();
+    lastFrameAt = 0; frames = 0;
     post({ type: 'alive-status', state: 'connecting', readyState: sock.readyState, sinceMs: 0 });
 
     clearTimeout(handshakeTimer);
@@ -85,8 +92,9 @@
     };
     sock.onmessage = (e) => {
       const text = String(e.data);
-      if (text.includes('"ack"')) { post({ type: 'alive-status', state: 'ack', sample: text.slice(0, 200) }); return; }
-      post({ type: 'alive-message', data: text.slice(0, 4000) });
+      lastFrameAt = Date.now(); frames++;
+      if (text.includes('"ack"')) { post({ type: 'alive-status', state: 'ack', sample: text.slice(0, 200), lastFrameAt, frames }); return; }
+      post({ type: 'alive-message', data: text.slice(0, 4000), lastFrameAt, frames });
     };
     sock.onclose = (e) => {
       if (ws === sock) { ws = null; clearTimeout(handshakeTimer); handshakeTimer = null; }
@@ -103,6 +111,9 @@
       tokens: tokens.length,
       hasUrl: !!wantUrl,
       connectingMs: ws?.readyState === WebSocket.CONNECTING ? Date.now() - connectingSince : null,
+      lastFrameAt: lastFrameAt || null,
+      sinceLastFrameMs: lastFrameAt ? Date.now() - lastFrameAt : null,
+      frames,
       handshakeTimer: !!handshakeTimer,
       href: location.href
     };

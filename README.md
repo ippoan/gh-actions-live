@@ -212,9 +212,17 @@ Windows Chrome 拡張  ──ws://<linux>:8799──▶  ws-bridge.mjs  ──st
 - Linux → 拡張: `curl -X POST localhost:8799/cmd -d '{"command":"open-dashboard","mode":"popup"}'`
   でウィンドウを遠隔で開ける。`refresh` / `snapshot` も受ける
 - 診断: `curl -X POST localhost:8799/cmd -d '{"command":"status"}'`。ダッシュボードからは
-  `{"type":"status", alive:{connected, fails, lastState, watchdogArmed, reconnectPending, background:{state, relay:{readyState, tokens}}}}`、
-  service worker からは `{"type":"ack","command":"status", alive:{tab, state, relay}}` が返る
+  `{"type":"status", alive:{connected, fails, lastState, lastMessageAt, idleMs, idleLimitMs, idleResets,
+  watchdogArmed, idleArmed, reconnectPending, background:{state, lastMessageAt, idleMs, relay:{readyState, tokens, lastFrameAt, sinceLastFrameMs, frames}}}}`、
+  service worker からは `{"type":"ack","command":"status", alive:{tab, state, lastMessageAt, idleMs, relay}}` が返る
   (`relay.readyState` は 0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED、null = socket 無し)
+- **`connected:true` は「生きている」の証明にならない** (#28)。half-open (TCP が静かに死ぬ) だと
+  readyState は OPEN のままで `ws.send()` も通るので、購読し直しは成功したように見える。
+  生死は **フレームを受け取った時刻** で見る:
+  `alive.idleMs` (ダッシュボードが最後にフレームを受けてからの ms) と
+  `alive.background.relay.sinceLastFrameMs` (socket を持つ github.com のタブ側の実測)。
+  `idleMs` が `idleLimitMs` (既定 10 分) を超えるとダッシュボードが自分で close → connect で張り直し、
+  `idleResets` が 1 増える。ダッシュボードのヘッダにも「最終受信 HH:MM:SS」として出る
 - 強制再接続: `curl -X POST localhost:8799/cmd -d '{"command":"alive-reset"}'`。relay の socket を閉じ、
   ダッシュボードが張り直す (閉じていれば開く)。`status` が `connected:false` のまま戻らないときに
 - 拡張側は **設定画面の「Linux 側リレーの URL」** に `ws://<host>:8799` を入れる
