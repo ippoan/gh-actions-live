@@ -39,7 +39,14 @@ async function openDashboard({ mode = 'popup' } = {}) {
   else if (mode === 'maximized') Object.assign(opts, { type: 'normal', state: 'maximized' });
   else                           Object.assign(opts, { type: 'popup', width: 1280, height: 820 });
 
-  return (await chrome.windows.create(opts)).id;
+  const win = await chrome.windows.create(opts);
+  // 保険 (#32): reload 直後の service worker から作ったウィンドウは Windows の foreground lock で
+  // 前面に来ないことがある (create の focused:true だけでは足りない)。もう一度前面要求を打つ。
+  // state は popup 既定のときだけ 'normal' に戻す (fullscreen / maximized を潰さない)
+  const focus = { focused: true, drawAttention: true };
+  if (!opts.state) focus.state = 'normal';
+  try { await chrome.windows.update(win.id, focus); } catch {}
+  return win.id;
 }
 
 // ---- alive socket を持つ github.com タブの管理 ----
@@ -186,37 +193,33 @@ async function nativeCall(cmd) {
   try { return await chrome.runtime.sendNativeMessage(NATIVE_HOST, { cmd }); }
   catch (e) { return { ok: false, error: String(e?.message || e), noHost: true }; }
 }
-// ---- 拡張の再起動は全部ここを通す (#30) ----
+// ---- 拡張の再起動は全部ここを通す (#30 / #32) ----
 // chrome.runtime.reload() は拡張のページを殺すが **ウィンドウ/タブは閉じない**。
 // 残ったタブは chrome-extension://invalid/ 相当の空白になり、URL が一致しなくなるので
-// onInstalled の reopenDashboard → openDashboard() は新しい popup を開く = 空ウィンドウが残る。
-// 先に自分でダッシュボードのタブを閉じてから reload する。
+// onInstalled の reopenDashboard → openDashboard() は新しい popup を開く = 空ウィンドウが残る (#30)。
+// かといって先に tabs.remove で閉じると、復活が新規ウィンドウになり、reload 直後の
+// service worker からでは Windows の foreground lock で前面に出ない (#32、v0.0.25 で実測)。
+// → ダッシュボードのタブは **閉じずに about:blank に差し替える** (拡張ページは同じく死ぬ)。
+// ウィンドウは位置も z 順もそのまま生き残り、reload 後に onInstalled が **そのタブに**
+// ダッシュボードを読み込み直す (reopenTabId)。Chrome 最後の 1 枚でも Chrome が落ちない。
 // 経路 (再読込ボタン / update / 10 分ごとの self-update) は全部これを使う。
 async function reloadSelf({ reopen, note, delayMs = 300 } = {}) {
   let tabs = [];
   try { tabs = await chrome.tabs.query({ url: chrome.runtime.getURL(DASH) }); } catch {}
   const reopenDashboard = reopen ?? tabs.length > 0;
-  const patch = { reopenDashboard };
+  // 複数開いていれば先頭に読み込み直す。残りは about:blank のまま (新規ウィンドウは作らない)
+  const reopenTabId = tabs.length ? tabs[0].id : null;
+  const patch = { reopenDashboard, reopenTabId };
   if (note) patch.lastSelfUpdate = note;
-  // ダッシュボードが Chrome の最後の 1 枚のときに remove すると Chrome ごと終わってしまう。
-  // その時だけ about:blank に差し替え (拡張ページは同じく死ぬ)、reload 後は
-  // **そのタブに**ダッシュボードを読み込み直す (新しいウィンドウを開かない)
-  let all = [];
-  try { all = await chrome.tabs.query({}); } catch {}
-  const lastTabs = tabs.length > 0 && all.length > 0 && all.length <= tabs.length;
-  if (lastTabs) patch.reopenTabId = tabs[0].id;
   try { await chrome.storage.local.set(patch); } catch {}
-  // タブが既に無い / 閉じられない場合も **必ず reload まで進む**
+  // タブが既に無い / 差し替えられない場合も **必ず reload まで進む**
   for (const t of tabs) {
-    try {
-      if (lastTabs) await chrome.tabs.update(t.id, { url: 'about:blank' });
-      else          await chrome.tabs.remove(t.id);
-    } catch {}
+    try { await chrome.tabs.update(t.id, { url: 'about:blank' }); } catch {}
   }
   // 呼び元 (bridge の ack / ダッシュボードの応答) が返るだけの猶予
   if (delayMs) await new Promise(res => setTimeout(res, delayMs));
   chrome.runtime.reload();
-  return { closed: lastTabs ? 0 : tabs.length, blanked: lastTabs ? tabs.length : 0, reopenDashboard };
+  return { blanked: tabs.length, reopenDashboard, reopenTabId };
 }
 
 // 更新: host に update.ps1 を走らせ、ディスクの版が変わったら自分をリロードする
@@ -319,12 +322,17 @@ chrome.runtime.onInstalled.addListener(async (d) => {
   if (reopenDashboard) {
     await chrome.storage.local.remove(['reopenDashboard', 'reopenTabId']);
     await closeDeadExtensionTabs();     // 旧版が残した空ウィンドウの掃除 (#30)
-    // 閉じずに about:blank にしたタブ (Chrome 最後の 1 枚) があれば、そこに読み込み直す
+    // reloadSelf が about:blank に差し替えたタブに、**同じウィンドウのまま**読み込み直す (#32)。
+    // 前面要求も打つ (reload 直後は foreground lock で前面に来にくい → drawAttention も)。
+    // タブが消えていた (ユーザーが閉じた等) ときだけ新しく開く
     if (reopenTabId != null) {
       try {
         const t = await chrome.tabs.update(reopenTabId, { url: chrome.runtime.getURL(DASH), active: true });
-        if (t) { try { await chrome.windows.update(t.windowId, { focused: true }); } catch {} return; }
-      } catch {}
+        if (t) {
+          try { await chrome.windows.update(t.windowId, { focused: true, drawAttention: true }); } catch {}
+          return;
+        }
+      } catch (e) { console.warn('[bg] reopenTabId', reopenTabId, 'gone -> openDashboard', e?.message || e); }
     }
     openDashboard({ mode: 'popup' });
   }
