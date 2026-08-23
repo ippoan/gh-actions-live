@@ -37,6 +37,10 @@ async function openDashboard({ mode = 'popup' } = {}) {
 let aliveTabId = null;
 let aliveCfg = null;          // { url, tokens }
 let aliveState = { state: 'idle' };
+// 最後に relay からフレーム (push / ack) が来た時刻。ダッシュボードが閉じていても
+// 「socket が生きているか」を status で言えるようにする (#28)。relay の ping にも
+// lastFrameAt / sinceLastFrameMs があるが、こちらは中継が届いているかの裏取り
+let aliveLastMessageAt = null;
 
 async function findGithubTab() {
   const tabs = await chrome.tabs.query({ url: 'https://github.com/*' });
@@ -120,6 +124,8 @@ async function aliveDiag() {
   return {
     tabId: aliveTabId, tab,
     state: aliveState,                                 // 最後に relay から届いた alive-status
+    lastMessageAt: aliveLastMessageAt,                 // 最後にフレームを受け取った時刻 (ISO)
+    idleMs: aliveLastMessageAt ? Date.now() - Date.parse(aliveLastMessageAt) : null,
     cfg: aliveCfg ? { hasUrl: !!aliveCfg.url, tokens: aliveCfg.tokens?.length ?? 0 } : null,
     relay                                              // relay の ping 結果 (readyState: 0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED)
   };
@@ -273,8 +279,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (aliveCfg?.url) aliveConnect(null);
     return;
   }
-  if (msg.type === 'alive-status')  { aliveState = { ...msg, at: new Date().toISOString() }; relayToDashboard(msg); return; }
-  if (msg.type === 'alive-message') { relayToDashboard(msg); return; }
+  if (msg.type === 'alive-status')  {
+    aliveState = { ...msg, at: new Date().toISOString() };
+    if (msg.state === 'ack') aliveLastMessageAt = aliveState.at;    // ack も alive からのフレーム
+    relayToDashboard(msg); return;
+  }
+  if (msg.type === 'alive-message') { aliveLastMessageAt = new Date().toISOString(); relayToDashboard(msg); return; }
 
   // ダッシュボードから: socket URL とトークンを渡して接続させる
   if (msg.type === 'alive-connect') {

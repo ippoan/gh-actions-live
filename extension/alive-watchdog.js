@@ -10,12 +10,20 @@
 // open / subscribed / ack が来なければ失敗扱いにして、relay に close を送ってから
 // バックオフ付きで張り直す。boot 時は未接続なら無条件で close → connect。
 //
+// もう 1 つ (#28): **繋がった後**の見張り。socket が half-open (TCP が静かに死ぬ) になると
+// readyState は OPEN のままで onclose も onerror も来ない。`ws.send()` も例外を投げないので
+// 20 分ごとの boot → 購読し直しは「送れた = 生きている」と誤判定する。
+// 生きている証拠になるのはフレームを受け取ったことだけなので、`onMessage()` で
+// `lastMessageAt` を更新し、接続中なのに idleLimitMs を超えて何も来なければ reset('idle') する。
+// 張り直しは close → connect なので、half-open でも「本当に繋がるか」を確かめられる。
+//
 // 依存 (connect / close / boot / タイマー) は全部注入するので Node の単体テストで回せる。
 export function createAliveWatchdog({
   connect,                       // () => void | Promise   relay に connect を頼む (socket URL とトークンを渡す)
   close,                         // () => void | Promise   relay に close を頼む
   boot = () => {},               // () => void | Promise   ページを取り直してトークンを更新 (5 回に 1 回)
   handshakeMs = 20000,           // connect 後これ以内に open/subscribed/ack が来なければ失敗
+  idleLimitMs = 10 * 60000,      // 接続中にこれだけ何も受け取らなければ死んだ扱いで張り直す (0 で無効)
   baseBackoff = 4000,
   maxBackoff = 5 * 60000,
   bootEvery = 5,
@@ -32,16 +40,41 @@ export function createAliveWatchdog({
     note: '',
     lastState: null, lastStateAt: null,
     lastConnectAt: null,
+    lastMessageAt: null,         // 最後にフレーム (push / ack) を受け取った時刻
+    idleResets: 0,               // idle 判定で張り直した回数
     watchdogArmed: false,
+    idleArmed: false,
     reconnectPending: false,
     nextRetryAt: null
   };
-  let watchTimer = null, reconnTimer = null;
+  let watchTimer = null, reconnTimer = null, idleTimer = null;
 
   const changed = () => { try { onChange(st); } catch {} };
   const safe = (fn, label) => { try { const r = fn?.(); if (r?.catch) r.catch(e => log(label, String(e))); } catch (e) { log(label, String(e)); } };
 
   function disarm() { clearTimeout(watchTimer); watchTimer = null; st.watchdogArmed = false; }
+  function clearIdle() { clearTimeout(idleTimer); idleTimer = null; st.idleArmed = false; }
+
+  // 接続中のあいだだけ張る。最後の受信から idleLimitMs で発火し、まだ idle でなければ残り時間で張り直す
+  function armIdle() {
+    clearIdle();
+    if (!idleLimitMs || !st.connected) return;
+    const base = st.lastMessageAt ?? now();
+    const wait = Math.max(1000, base + idleLimitMs - now());
+    st.idleArmed = true;
+    idleTimer = setTimeout(() => {
+      idleTimer = null; st.idleArmed = false;
+      if (!st.connected) return;
+      const idle = now() - (st.lastMessageAt ?? now());
+      if (idle < idleLimitMs) { armIdle(); return; }
+      // OPEN のまま何も来ない = half-open の疑い。send では確かめられないので張り直して確認する
+      st.idleResets++;
+      log('alive idle:', `${Math.round(idle / 1000)}s 無受信 → 張り直し (#${st.idleResets})`);
+      reset('idle');
+      st.note = `無受信 ${Math.round(idle / 1000)}s → 再接続`;
+      changed();
+    }, wait);
+  }
   function cancelReconnect() { clearTimeout(reconnTimer); reconnTimer = null; st.reconnectPending = false; st.nextRetryAt = null; }
 
   function arm() {
@@ -67,7 +100,7 @@ export function createAliveWatchdog({
   function fail(note) {
     st.connected = false;
     st.note = note;
-    disarm();
+    disarm(); clearIdle();
     if (reconnTimer) { changed(); return; }
     st.fails++;
     const wait = st.backoff;
@@ -90,10 +123,13 @@ export function createAliveWatchdog({
     if (msg.state === 'open' || msg.state === 'subscribed' || msg.state === 'ack') {
       st.connected = true; st.note = '';
       st.fails = 0; st.backoff = baseBackoff;
-      disarm(); cancelReconnect();
+      // ack は alive からのフレームそのもの。open/subscribed は自分側の出来事だが、
+      // 繋ぎ直した直後に idle 判定が走らないよう起点として同じく now を入れる
+      st.lastMessageAt = now();
+      disarm(); cancelReconnect(); armIdle();
     } else if (msg.state === 'closed' && msg.byUs) {
       // 自分 (watchdog / reset / 握手タイムアウト) が閉じた。続きの connect は呼び出し側が行う
-      st.connected = false;
+      st.connected = false; clearIdle();
       if (!st.note) st.note = `切断 (${msg.byUs})`;
     } else if (msg.state === 'closed' || msg.state === 'error') {
       fail(msg.state === 'closed' ? `切断 ${msg.code ?? ''}`.trim() : (msg.error || 'error'));
@@ -106,12 +142,19 @@ export function createAliveWatchdog({
     changed();
   }
 
+  // relay からの alive-message (GitHub の push 本体)。**生きている唯一の証拠**なので
+  // ここで idle を巻き戻す。alive-status の ack も onStatus 側で同じ扱い
+  function onMessage() {
+    st.lastMessageAt = now();
+    if (st.connected) armIdle();
+  }
+
   // connect の送信自体が失敗した (github.com のタブが無い / content script が応答しない 等)
   function onConnectError(error) { fail(String(error || 'タブに接続できない')); }
 
   // 強制的に張り直す (bridge の alive-reset / ユーザー操作)。バックオフもリセット
   function reset(reason = 'reset') {
-    disarm(); cancelReconnect();
+    disarm(); cancelReconnect(); clearIdle();
     st.fails = 0; st.backoff = baseBackoff; st.connected = false; st.note = '';
     safe(close, 'close');
     request(reason);
@@ -133,9 +176,12 @@ export function createAliveWatchdog({
   }
 
   function snapshot() {
-    return { ...st, nowMs: now() };
+    return { ...st, nowMs: now(),
+             idleMs: st.lastMessageAt != null ? now() - st.lastMessageAt : null,
+             idleLimitMs };
   }
 
-  return { state: st, onStatus, onConnectError, onBoot, ensure, reset, snapshot,
-           get armed() { return !!watchTimer; }, get pending() { return !!reconnTimer; } };
+  return { state: st, onStatus, onMessage, onConnectError, onBoot, ensure, reset, snapshot,
+           get armed() { return !!watchTimer; }, get pending() { return !!reconnTimer; },
+           get idlePending() { return !!idleTimer; } };
 }

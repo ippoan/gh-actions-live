@@ -214,3 +214,108 @@ test('connect / close / boot が throw しても状態機械は止まらない',
   assert.equal(w.state.fails, 1);
   assert.ok(logs.some(l => /boom/.test(l)));
 });
+
+/* ---- 繋がった後の見張り (idle watchdog, #28) ---- */
+// half-open (readyState は OPEN のまま TCP が死ぬ) では onclose も onerror も来ず、
+// ws.send() も通ってしまう。生きている証拠は「フレームを受け取ったこと」だけなので、
+// 無受信が閾値を超えたら張り直して確かめる。
+
+const IDLE = 600000;   // 10 分
+
+test('接続中に閾値を超えて無受信だと close → connect で張り直す (#28)', () => {
+  const { w, clock, calls } = setup({ idleLimitMs: IDLE });
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  calls.length = 0;
+  clock.advance(IDLE - 1);
+  assert.deepEqual(calls, []);                    // まだ閾値内
+  assert.equal(w.state.connected, true);
+  clock.advance(1);
+  assert.deepEqual(calls, ['close', 'connect']);  // reset('idle') = 張り直して生死を確かめる
+  assert.equal(w.state.idleResets, 1);
+  assert.equal(w.state.connected, false);
+  assert.match(w.state.note, /無受信/);
+  assert.equal(w.armed, true);                    // 張り直しには握手 watchdog が付く
+});
+
+test('フレームを受け取ると idle は解除され、そこから測り直す', () => {
+  const { w, clock, calls } = setup({ idleLimitMs: IDLE });
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  calls.length = 0;
+  for (let i = 0; i < 5; i++) {                   // 9 分おきに push が来ている限り張り直さない
+    clock.advance(IDLE - 60000);
+    w.onMessage({ type: 'alive-message' });
+    assert.deepEqual(calls, []);
+  }
+  assert.equal(w.state.lastMessageAt, clock.now());
+  assert.equal(w.state.idleResets, 0);
+  clock.advance(IDLE);                            // 止まったら張り直す
+  assert.deepEqual(calls, ['close', 'connect']);
+  assert.equal(w.state.idleResets, 1);
+});
+
+test('alive の ack もフレームなので idle を戻す', () => {
+  const { w, clock, calls } = setup({ idleLimitMs: IDLE });
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  calls.length = 0;
+  clock.advance(IDLE - 1000);
+  w.onStatus({ state: 'ack', sample: '{"e":"ack","health":true}' });
+  clock.advance(IDLE - 1000);
+  assert.deepEqual(calls, []);
+  assert.equal(w.state.connected, true);
+});
+
+test('切断中は idle で張り直さない (再接続のバックオフに任せる)', () => {
+  const { w, clock, calls } = setup({ idleLimitMs: IDLE });
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  w.onStatus({ state: 'closed', code: 1006 });    // fail → バックオフで再接続
+  calls.length = 0;
+  const before = w.state.fails;
+  clock.advance(4000);                            // バックオフ分の再接続 1 回だけ
+  assert.deepEqual(calls, ['close', 'connect']);
+  calls.length = 0;
+  clock.advance(IDLE * 2);                        // 未接続のまま。idle 由来の張り直しは無い
+  assert.equal(w.state.idleResets, 0);
+  assert.ok(w.state.fails > before);
+});
+
+test('idleLimitMs: 0 で idle 監視を止められる', () => {
+  const { w, clock, calls } = setup({ idleLimitMs: 0 });
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  calls.length = 0;
+  clock.advance(60 * 60000);
+  assert.deepEqual(calls, []);
+  assert.equal(w.idlePending, false);
+});
+
+test('snapshot に lastMessageAt / idleMs / idleLimitMs が出る (bridge の status 用)', () => {
+  const { w, clock } = setup({ idleLimitMs: IDLE });
+  w.onBoot();
+  assert.equal(w.snapshot().lastMessageAt, null);
+  assert.equal(w.snapshot().idleMs, null);
+  w.onStatus({ state: 'open' });
+  const at = clock.now();
+  clock.advance(90000);
+  const s = w.snapshot();
+  assert.equal(s.lastMessageAt, at);
+  assert.equal(s.idleMs, 90000);
+  assert.equal(s.idleLimitMs, IDLE);
+  assert.equal(s.idleArmed, true);
+});
+
+test('reset で idle の起点も張り直され、直後に誤発火しない', () => {
+  const { w, clock, calls } = setup({ idleLimitMs: IDLE });
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  clock.advance(IDLE - 1000);
+  w.reset('alive-reset');
+  calls.length = 0;
+  w.onStatus({ state: 'open' });                  // 張り直し成功
+  clock.advance(IDLE - 1);
+  assert.deepEqual(calls, []);
+  assert.equal(w.state.idleResets, 0);
+});
