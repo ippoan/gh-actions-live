@@ -119,6 +119,10 @@ export function createAliveWatchdog({
 
   // relay からの alive-status
   function onStatus(msg = {}) {
+    // 置き換わった後の古い socket の onclose。今の接続とは無関係なので状態を触らない。
+    // (張り直しの close → connect が成功した後に前の socket の close が届くと、
+    //  connected:true を false で上書きして誰も再接続しないまま固まる)
+    if (msg.state === 'closed' && msg.stale) { log('alive: 古い socket の close を無視', msg.code ?? ''); return; }
     st.lastState = msg.state; st.lastStateAt = now();
     if (msg.state === 'open' || msg.state === 'subscribed' || msg.state === 'ack') {
       st.connected = true; st.note = '';

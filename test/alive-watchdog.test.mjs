@@ -319,3 +319,25 @@ test('reset で idle の起点も張り直され、直後に誤発火しない',
   assert.deepEqual(calls, []);
   assert.equal(w.state.idleResets, 0);
 });
+
+test('古い socket の close (stale) は接続済みの状態を壊さない (#28 の実機検証)', () => {
+  const { w, clock, calls } = setup({ idleLimitMs: IDLE });
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  calls.length = 0;
+  clock.advance(IDLE);                                  // idle → reset('idle') = close → connect
+  assert.deepEqual(calls, ['close', 'connect']);
+  w.onStatus({ state: 'ack' });                         // 張り直し成功 (実機では 0.8s 後)
+  assert.equal(w.state.connected, true);
+  calls.length = 0;
+  clock.advance(2200);
+  w.onStatus({ state: 'closed', code: 1005, byUs: 'dashboard', stale: true });  // 前の socket の後片付け
+  assert.equal(w.state.connected, true);                // 上書きされない
+  assert.equal(w.state.lastState, 'ack');
+  assert.equal(w.armed, false);
+  assert.equal(w.pending, false);
+  clock.advance(IDLE - 2200 - 1);                       // idle も生きたまま (無受信ならまた張り直す)
+  assert.deepEqual(calls, []);
+  clock.advance(1);                                     // ack から idleLimitMs
+  assert.deepEqual(calls, ['close', 'connect']);
+});
