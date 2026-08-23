@@ -15,6 +15,7 @@ repo ごとの列 + run カードで並べるので、**同一 repo で並列に
    **この socket は github.com のタブ (content script) で張る。** 拡張ページから張ると
    Origin が chrome-extension:// になり alive が握手直後に 1006 で切る。
    background が監視対象 repo の Actions ページを pinned タブで開いて場所を用意する
+   (pinned タブを閉じても / 他サイトへ移しても background が即ダッシュボードへ `closed` を伝え、数秒で開き直す #36)
 3. push が来たら、その run の partial (/actions/workflow-run/<checkSuiteId>, 約 10KB) だけ
    取り直して状態を確定する
 ```
