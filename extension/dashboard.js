@@ -411,10 +411,11 @@ $('update').addEventListener('click', async () => {
 // 立ち上げ直し、ディスク上に新版があればそれも拾う。
 // **ここで chrome.runtime.reload() を呼んではいけない** (#30): ページは死ぬのに
 // ウィンドウは残り、開き直しで空ウィンドウが 1 枚増える。background に頼むと
-// reloadSelf がこのタブを閉じてから reload し、後で 1 枚だけ開き直す。
+// reloadSelf がこのタブを about:blank に差し替えてから reload し、後で **同じタブに**
+// 読み込み直す (閉じて開き直すと前面に出ない → #32)。
 $('reload').addEventListener('click', async () => {
   $('reload').disabled = true; $('reload').textContent = '再起動中…';
-  // このタブは background に閉じられるので、応答は返ってこなくてよい
+  // このタブは background に about:blank へ差し替えられるので、応答は返ってこなくてよい
   chrome.runtime.sendMessage({ target: 'background', type: 'command', command: 'reload', reopen: true })
     .catch(() => {});
 });
