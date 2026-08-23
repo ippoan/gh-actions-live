@@ -28,6 +28,8 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
 - `dashboard.js`: alive 切断時の再接続は指数バックオフ。無条件に `boot()` を呼ぶと 5 秒周期ポーリングになる。
   再接続の判断は `alive-watchdog.js` (純粋モジュール・`npm test` で回る) に集約。connect を頼んだら必ず
   watchdog を張る。「`closed`/`error` が来たときだけ再接続」に戻すと CONNECTING で固まって死ぬ (#25)
+- `background.js` の `relayToDashboard` は `{ ...msg, target: 'dashboard' }` (target を後勝ち)。relay の msg には
+  `target:'background'` が付いているので逆にすると dashboard が全部捨て、push が一切届かなくなる (#25 の真因、#23〜v0.0.22)
 - 非管理 Windows では HKLM の `ExtensionSettings` を Chrome が捨てる (仕様)。
   「MSI で入らない」は #9 を先に読む
 
