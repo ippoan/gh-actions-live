@@ -10,11 +10,23 @@ import { applySeedConfig } from './seed-config.js';
 
 const DASH = 'dashboard.html';
 
+// ダッシュボードのタブが「生きている」か (ping に答えるか)。
+// chrome.runtime.reload() の後に残ったタブはページが死んでいて答えない (#30)。
+async function dashboardAlive(tabId) {
+  try { return !!(await chrome.tabs.sendMessage(tabId, { target: 'dashboard', type: 'ping' }))?.ok; }
+  catch { return false; }
+}
+
 async function openDashboard({ mode = 'popup' } = {}) {
   const url = chrome.runtime.getURL(DASH);
 
   const existing = await chrome.tabs.query({ url });
   if (existing.length) {
+    // 保険 (#30): URL は一致するのに中身が死んでいるタブ (reload 後の空白) は
+    // 新しいウィンドウを開かず、**同じウィンドウで読み込み直す**。空ウィンドウを増やさない
+    if (!(await dashboardAlive(existing[0].id))) {
+      try { await chrome.tabs.reload(existing[0].id); } catch {}
+    }
     await chrome.windows.update(existing[0].windowId, { focused: true, drawAttention: true });
     await chrome.tabs.update(existing[0].id, { active: true });
     return existing[0].windowId;
@@ -174,14 +186,44 @@ async function nativeCall(cmd) {
   try { return await chrome.runtime.sendNativeMessage(NATIVE_HOST, { cmd }); }
   catch (e) { return { ok: false, error: String(e?.message || e), noHost: true }; }
 }
+// ---- 拡張の再起動は全部ここを通す (#30) ----
+// chrome.runtime.reload() は拡張のページを殺すが **ウィンドウ/タブは閉じない**。
+// 残ったタブは chrome-extension://invalid/ 相当の空白になり、URL が一致しなくなるので
+// onInstalled の reopenDashboard → openDashboard() は新しい popup を開く = 空ウィンドウが残る。
+// 先に自分でダッシュボードのタブを閉じてから reload する。
+// 経路 (再読込ボタン / update / 10 分ごとの self-update) は全部これを使う。
+async function reloadSelf({ reopen, note, delayMs = 300 } = {}) {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: chrome.runtime.getURL(DASH) }); } catch {}
+  const reopenDashboard = reopen ?? tabs.length > 0;
+  const patch = { reopenDashboard };
+  if (note) patch.lastSelfUpdate = note;
+  // ダッシュボードが Chrome の最後の 1 枚のときに remove すると Chrome ごと終わってしまう。
+  // その時だけ about:blank に差し替え (拡張ページは同じく死ぬ)、reload 後は
+  // **そのタブに**ダッシュボードを読み込み直す (新しいウィンドウを開かない)
+  let all = [];
+  try { all = await chrome.tabs.query({}); } catch {}
+  const lastTabs = tabs.length > 0 && all.length > 0 && all.length <= tabs.length;
+  if (lastTabs) patch.reopenTabId = tabs[0].id;
+  try { await chrome.storage.local.set(patch); } catch {}
+  // タブが既に無い / 閉じられない場合も **必ず reload まで進む**
+  for (const t of tabs) {
+    try {
+      if (lastTabs) await chrome.tabs.update(t.id, { url: 'about:blank' });
+      else          await chrome.tabs.remove(t.id);
+    } catch {}
+  }
+  // 呼び元 (bridge の ack / ダッシュボードの応答) が返るだけの猶予
+  if (delayMs) await new Promise(res => setTimeout(res, delayMs));
+  chrome.runtime.reload();
+  return { closed: lastTabs ? 0 : tabs.length, blanked: lastTabs ? tabs.length : 0, reopenDashboard };
+}
+
 // 更新: host に update.ps1 を走らせ、ディスクの版が変わったら自分をリロードする
 async function runUpdate() {
   const r = await nativeCall('update');
-  if (r.ok && r.updated) {
-    const dash = await chrome.tabs.query({ url: chrome.runtime.getURL(DASH) });
-    await chrome.storage.local.set({ reopenDashboard: dash.length > 0, lastSelfUpdate: `${r.from} -> ${r.to}` });
-    setTimeout(() => chrome.runtime.reload(), 300);
-  }
+  // reload の完了は待たない (待つと ack が返せない)。閉じる → reload の順は reloadSelf が守る
+  if (r.ok && r.updated) reloadSelf({ note: `${r.from} -> ${r.to}` });
   return r;
 }
 
@@ -206,6 +248,13 @@ async function handleCommand(msg, via = 'external') {
       await openDashboard({ mode: msg.mode || 'popup' });
       return { ok: true, closed, reopened: true, via };
     }
+    case 'reload':
+      // 拡張ごと再起動 (ダッシュボードの「再読込」ボタン / bridge から)。
+      // ダッシュボードは自分で runtime.reload() しない — 空ウィンドウが残るため (#30)。
+      // ack を返してから reload させたいので await しない。開き直すかどうかは
+      // reloadSelf が「今ダッシュボードが開いているか」で決める (msg.reopen で上書き可)
+      reloadSelf({ reopen: typeof msg.reopen === 'boolean' ? msg.reopen : undefined });
+      return { ok: true, reloading: true, via };
     case 'check-update':   await checkDiskVersion(); return { ok: true };
     case 'update':         return await runUpdate();
     case 'native-ping':    return await nativeCall('ping');
@@ -243,10 +292,21 @@ async function checkDiskVersion() {
     const running = chrome.runtime.getManifest().version;
     if (!onDisk || onDisk === running) return;
     console.log('[bg] on-disk version', onDisk, '!= running', running, '-> reload');
-    const dash = await chrome.tabs.query({ url: chrome.runtime.getURL(DASH) });
-    await chrome.storage.local.set({ reopenDashboard: dash.length > 0, lastSelfUpdate: `${running} -> ${onDisk}` });
-    chrome.runtime.reload();
+    await reloadSelf({ note: `${running} -> ${onDisk}` });
   } catch (e) { console.warn('[bg] checkDiskVersion', e); }
+}
+
+// 保険 2 (#30): reload で死んだ拡張ページのタブ (chrome-extension://invalid/) の掃除。
+// reloadSelf が先に閉じているので通常は 0 件。旧版から上げた直後や、reload を
+// 別経路 (chrome://extensions の ↻) で踏んだときだけ残る。
+// 自分が reload した直後 (reopenDashboard が立っていた) にだけ走らせる —
+// invalid には拡張 ID が残らないので、他拡張の残骸と区別が付かないため。
+async function closeDeadExtensionTabs() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: 'chrome-extension://invalid/*' }); } catch { return 0; }
+  for (const t of tabs) { try { await chrome.tabs.remove(t.id); } catch {} }
+  if (tabs.length) console.log('[bg] closed dead extension tabs', tabs.length);
+  return tabs.length;
 }
 
 chrome.runtime.onInstalled.addListener(async (d) => {
@@ -255,8 +315,19 @@ chrome.runtime.onInstalled.addListener(async (d) => {
   await applySeedConfig((...a) => console.log('[bg]', ...a));
   bridge.ensure();
   // 再読込ボタン / self-update の後にダッシュボードを開き直す (reason は unpacked の reload だと 'update')
-  const { reopenDashboard } = await chrome.storage.local.get('reopenDashboard');
-  if (reopenDashboard) { await chrome.storage.local.remove('reopenDashboard'); openDashboard({ mode: 'popup' }); }
+  const { reopenDashboard, reopenTabId } = await chrome.storage.local.get(['reopenDashboard', 'reopenTabId']);
+  if (reopenDashboard) {
+    await chrome.storage.local.remove(['reopenDashboard', 'reopenTabId']);
+    await closeDeadExtensionTabs();     // 旧版が残した空ウィンドウの掃除 (#30)
+    // 閉じずに about:blank にしたタブ (Chrome 最後の 1 枚) があれば、そこに読み込み直す
+    if (reopenTabId != null) {
+      try {
+        const t = await chrome.tabs.update(reopenTabId, { url: chrome.runtime.getURL(DASH), active: true });
+        if (t) { try { await chrome.windows.update(t.windowId, { focused: true }); } catch {} return; }
+      } catch {}
+    }
+    openDashboard({ mode: 'popup' });
+  }
 });
 chrome.runtime.onStartup.addListener(async () => { await applySeedConfig(); bridge.ensure(); checkDiskVersion(); });
 chrome.alarms.onAlarm.addListener(async a => {

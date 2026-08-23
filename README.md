@@ -118,13 +118,25 @@ Chrome は Web Store 外の拡張の `update_url` を相手にしないので自
 1. ヘッダに `v0.0.12 → v0.0.13 あり` と出たら **「更新」ボタン**を押す
 2. 拡張が host を呼び、host が `update.ps1` を実行: `update.xml` の版を見て
    `gh-actions-live-extension.zip` を落とし、sha256 を照合して `extension\` を差し替える (ログは `update.log`)
-3. 拡張が `chrome.runtime.reload()`。ダッシュボードを開いていれば開き直す
+3. background が `reloadSelf()`: **先にダッシュボードのタブを閉じてから** `chrome.runtime.reload()`。
+   開いていれば reload 後に 1 枚だけ開き直す (閉じずに reload すると空ウィンドウが残る → #30)
 
 Linux 側 (bridge) から `{"command":"update"}` を送っても同じことが起きる。
 定期的に勝手に上げたい人は `update.ps1 -Register` でタスク スケジューラに登録できる (既定では登録しない)。
 
 MSI を使わずに zip を展開して読み込むこともできる。その場合は host が無いので、
 新しい zip を同じフォルダに上書き展開して拡張カードの ↻ を押す。
+
+#### 再読込 / 更新の手動確認 (実機でしか分からない)
+
+拡張の再起動 (`chrome.runtime.reload()`) は**ページを殺すだけでウィンドウは閉じない**ので、
+放っておくと空のウィンドウが 1 枚残る。reload は background の `reloadSelf()` に一本化してあり、
+**先にダッシュボードのタブを閉じてから** reload する (#30)。実機で見るのはここ:
+
+1. ダッシュボードを開いた状態で「再読込」→ **ウィンドウは 1 枚のまま**中身が復活すること
+   (空白のウィンドウが増えていないこと)
+2. bridge から `{"command":"update"}` / `{"command":"reload"}` を送っても同じこと
+3. 10 分ごとの self-update (ディスクの版が上がったとき) でも同じこと
 
 ### 管理端末での手順
 
@@ -190,7 +202,7 @@ Claude in Chrome は github.com のタブで JS を実行できるので、**設
 chrome.runtime.sendMessage('oaadakmclelmnaieokjbhldfacfckaaj',
   { command: 'set-config', repos: ['owner/repo'], bridgeUrl: 'ws://host:8799', notify: false },
   r => console.log(r));
-// command: get-config / open-dashboard / update / check-update / native-ping / status / alive-reset も同じ経路で使える
+// command: get-config / open-dashboard / update / check-update / native-ping / status / alive-reset / reload も同じ経路で使える
 ```
 
 ## Claude Code への途中通知 (bridge)

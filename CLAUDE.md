@@ -25,6 +25,14 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   拡張ページ (`chrome-extension://`) から張ると Origin で弾かれ握手直後に 1006。
   DNR の `modifyHeaders` では websocket 握手の Origin を変えられない (v0.0.19 で実測・失敗)。
   background が pinned タブを用意し、ダッシュボードは socket URL と購読トークンを渡すだけ
+- **拡張の reload は background の `reloadSelf()` に一本化。ダッシュボードのタブを閉じてから
+  `chrome.runtime.reload()` する。** reload はページを殺すがウィンドウは閉じないので、閉じずに
+  reload → `onInstalled` の `reopenDashboard` が新しい popup を開く = 空ウィンドウが 1 枚残る (#30)。
+  ダッシュボードの「再読込」は background へ `command:'reload'` を送るだけ (自分で reload しない)。
+  保険として `openDashboard()` は既存タブに `{target:'dashboard',type:'ping'}` を打ち、
+  無応答なら `chrome.tabs.reload` で**同じウィンドウ**に読み込み直す。
+  ダッシュボードが Chrome 最後の 1 枚のときだけ `remove` せず `about:blank` に差し替える
+  (閉じると Chrome ごと終わる)。その場合は reload 後にそのタブへ読み込み直す
 - `dashboard.js`: alive 切断時の再接続は指数バックオフ。無条件に `boot()` を呼ぶと 5 秒周期ポーリングになる
 - **`connected:true` / `ws.send()` の成功は socket が生きている証明にならない** (#28)。half-open だと
   readyState は OPEN のまま、send も例外を投げず、20 分 boot の購読し直しも成功して見える。
