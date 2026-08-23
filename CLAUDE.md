@@ -25,6 +25,8 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   拡張ページ (`chrome-extension://`) から張ると Origin で弾かれ握手直後に 1006。
   DNR の `modifyHeaders` では websocket 握手の Origin を変えられない (v0.0.19 で実測・失敗)。
   background が pinned タブを用意し、ダッシュボードは socket URL と購読トークンを渡すだけ
+  alive タブを閉じる / github.com 外へ遷移 / discard されたら background が `alive-status closed (reason: tab-closed|tab-gone)`
+  をダッシュボードへ送り、watchdog が即張り直す (#36)。content script は自分では closed を post できない
 - **拡張の reload は background の `reloadSelf()` に一本化。ダッシュボードのタブを `about:blank` に
   差し替えてから `chrome.runtime.reload()` し、`onInstalled` で同じタブ (`reopenTabId`) に読み込み直す。**
   reload はページを殺すがウィンドウは閉じないので、何もせず reload → `onInstalled` の

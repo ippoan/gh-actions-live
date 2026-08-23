@@ -166,7 +166,36 @@ async function aliveConnect(cfg) {
   }
 }
 
-chrome.tabs.onRemoved.addListener(id => { if (id === aliveTabId) { aliveTabId = null; aliveState = { state: 'tab-closed' }; } });
+// alive タブが消えた / content script ごと居なくなった (#36)。
+// content script はタブと一緒に死ぬので自分では `closed` を post できない。ここで代わりに
+// ダッシュボードへ `closed` を送る (byUs 無し・stale 無し → watchdog が fail → バックオフ → connect →
+// ensureAliveTab が pinned タブを開き直す)。送らないと idle watchdog (10 分) まで connected:true のまま push が止まる
+function aliveTabGone(reason, extra = {}) {
+  const tabId = aliveTabId;
+  aliveTabId = null;
+  aliveState = { state: reason, tabId, ...extra, at: new Date().toISOString() };
+  console.log('[bg] alive tab gone:', reason, tabId, extra);
+  relayToDashboard({ type: 'alive-status', state: 'closed', code: null, reason, tabId });
+}
+
+chrome.tabs.onRemoved.addListener(id => { if (id === aliveTabId) aliveTabGone('tab-closed'); });
+
+// alive タブが github.com 以外へ遷移した / メモリセーバーで discard された。
+// github.com 内の SPA 遷移 (pushState) でも onUpdated に url は来るが content script は残っているので、
+// **本当に居なくなったか ping で確かめてから** 送る
+async function onAliveTabUpdated(id, info = {}) {
+  if (id !== aliveTabId) return false;
+  const left = typeof info.url === 'string' && !info.url.startsWith('https://github.com/');
+  if (!left && !info.discarded) return false;
+  try {
+    const r = await chrome.tabs.sendMessage(id, { target: 'alive-relay', type: 'ping' });
+    if (r?.ok && id === aliveTabId) return false;     // まだ居る (SPA 遷移など)
+  } catch { /* content script 無し */ }
+  if (id !== aliveTabId) return false;                // ping 待ちの間に onRemoved 等で処理済み
+  aliveTabGone('tab-gone', { url: info.url, discarded: !!info.discarded });
+  return true;
+}
+chrome.tabs.onUpdated.addListener(onAliveTabUpdated);
 
 // content script からのイベントをダッシュボードへ中継する。
 // relay からの msg には target:'background' が付いているので、**target は spread の後で** 上書きする。

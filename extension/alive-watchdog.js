@@ -136,7 +136,8 @@ export function createAliveWatchdog({
       st.connected = false; clearIdle();
       if (!st.note) st.note = `切断 (${msg.byUs})`;
     } else if (msg.state === 'closed' || msg.state === 'error') {
-      fail(msg.state === 'closed' ? `切断 ${msg.code ?? ''}`.trim() : (msg.error || 'error'));
+      // code 無しの closed は background からの「タブが消えた」(#36)。reason (tab-closed / tab-gone) を note に出す
+      fail(msg.state === 'closed' ? `切断 ${msg.code ?? msg.reason ?? ''}`.trim() : (msg.error || 'error'));
       return;
     } else if (msg.state === 'connecting') {
       st.connected = false;

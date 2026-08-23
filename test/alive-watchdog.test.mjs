@@ -341,3 +341,18 @@ test('古い socket の close (stale) は接続済みの状態を壊さない (#
   clock.advance(1);                                     // ack から idleLimitMs
   assert.deepEqual(calls, ['close', 'connect']);
 });
+
+test('background からの「タブが消えた」closed (code 無し・reason 付き) は本物の切断として再接続する (#36)', () => {
+  const { w, clock, calls } = setup();
+  w.onBoot();
+  w.onStatus({ state: 'ack' });
+  assert.equal(w.state.connected, true);
+  calls.length = 0;
+  // pinned の github.com タブが閉じられた。content script は居ないので background が代わりに送る
+  w.onStatus({ state: 'closed', code: null, reason: 'tab-closed', tabId: 7 });
+  assert.equal(w.state.connected, false);
+  assert.equal(w.state.note, '切断 tab-closed');       // code が無ければ reason を出す
+  assert.equal(w.pending, true);                        // バックオフ付きで再接続を予約
+  clock.advance(4000);
+  assert.deepEqual(calls, ['close', 'connect']);        // connect → background の ensureAliveTab がタブを開き直す
+});
