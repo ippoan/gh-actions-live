@@ -208,7 +208,7 @@ Claude in Chrome は github.com のタブで JS を実行できるので、**設
 chrome.runtime.sendMessage('oaadakmclelmnaieokjbhldfacfckaaj',
   { command: 'set-config', repos: ['owner/repo'], bridgeUrl: 'ws://host:8799', notify: false },
   r => console.log(r));
-// command: get-config / open-dashboard / update / check-update / native-ping / status / alive-reset / reload も同じ経路で使える
+// command: get-config / open-dashboard / access-login / update / check-update / native-ping / status / alive-reset / reload も同じ経路で使える
 ```
 
 ## Claude Code への途中通知 (bridge)
@@ -229,6 +229,12 @@ Windows Chrome 拡張  ──ws://<linux>:8799──▶  ws-bridge.mjs  ──st
   それを通知に変える (`Monitor({command: "node bridge/ws-bridge.mjs 8799", persistent: true})`)
 - Linux → 拡張: `curl -X POST localhost:8799/cmd -d '{"command":"open-dashboard","mode":"popup"}'`
   でウィンドウを遠隔で開ける。`refresh` / `snapshot` も受ける
+- Cloudflare Access のログイン承認: `curl -X POST localhost:8799/cmd -d '{"command":"access-login","url":"<cloudflared access login が出した URL>"}'`
+  で承認ページを前面のウィンドウに開く。トークンを取りに行くのは Linux 側の `cloudflared` 自身なので、
+  ブラウザは「Approve」を押すだけでよく、Windows の Chrome で承認しても通る。
+  **開ける URL は https かつパスが `/cdn-cgi/access/cli` ちょうどのものだけ** (完全一致)。
+  bridge には認証が無いので、絞らないと 8799 に届く者が Chrome で任意のページを開けてしまうため。
+  弾いた URL はログにも応答にも全体を出さない (`token=` の nonce が乗っている)
 - 診断: `curl -X POST localhost:8799/cmd -d '{"command":"status"}'`。ダッシュボードからは
   `{"type":"status", alive:{connected, fails, lastState, lastMessageAt, idleMs, idleLimitMs, idleResets,
   watchdogArmed, idleArmed, reconnectPending, background:{state, lastMessageAt, idleMs, relay:{readyState, tokens, lastFrameAt, sinceLastFrameMs, frames}}}}`、

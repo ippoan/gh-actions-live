@@ -49,6 +49,40 @@ async function openDashboard({ mode = 'popup' } = {}) {
   return win.id;
 }
 
+// ---- cloudflared access login の承認ページを開く (#40) ----
+// `cloudflared access login <domain>` が出す URL をこちら側の Chrome で開き、人が「Approve」を
+// 押せるようにするだけの導線。トークンを取りに行くのは Linux 側の cloudflared 自身なので、
+// ブラウザは承認するだけでよく、Windows の Chrome で承認しても成立する。
+//
+// bridge は tailnet の 8799 で待ち受けていて認証が無い。そこへ到達できる者に
+// 「任意の URL を開かせる」と capability の穴になるので、**開ける URL を絞る**:
+// https で、パスが /cdn-cgi/access/cli **ちょうど** のものだけ。
+const ACCESS_LOGIN_PATH = '/cdn-cgi/access/cli';
+
+// 通れば { url }、弾けば { error }。error にクエリを載せない
+// (Access の URL には token=<nonce> が乗っている。出すのはホスト名とパスまで)
+function parseAccessLoginUrl(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return { error: 'url required' };
+  let u;
+  try { u = new URL(raw); } catch { return { error: 'invalid url' }; }
+  if (u.protocol !== 'https:') return { error: `scheme not allowed: ${u.protocol} (https only)` };
+  // new URL() は `..` を畳んでから pathname に入れる。その**正規化後**の値で完全一致を見る
+  // (前方一致だと .../cdn-cgi/access/cli/../../admin のような書き方を通してしまう)
+  if (u.pathname !== ACCESS_LOGIN_PATH) return { error: `path not allowed: ${u.host}${u.pathname}` };
+  return { url: u.href };
+}
+
+// 人が今すぐ Approve を押せる状態にするのが目的なので、既存ウィンドウを使い回さず
+// 毎回**前面の**ウィンドウで開く (openDashboard は自分のページ専用なので流用しない)。
+async function openApprovalWindow(url) {
+  const win = await chrome.windows.create({ url, type: 'popup', width: 980, height: 800, focused: true });
+  // #32 と同じ保険: create の focused:true だけでは Windows の foreground lock で前面に来ないことがある
+  try { await chrome.windows.update(win.id, { focused: true, drawAttention: true, state: 'normal' }); } catch {}
+  const tab = (win.tabs || [])[0];
+  if (tab) { try { await chrome.tabs.update(tab.id, { active: true }); } catch {} }
+  return win.id;
+}
+
 // ---- alive socket を持つ github.com タブの管理 ----
 // 拡張ページから張ると Origin が chrome-extension:// になり alive に 1006 で切られる。
 // github.com のタブ (content script alive-relay.js) から張れば Origin は https://github.com。
@@ -264,6 +298,12 @@ async function runUpdate() {
 async function handleCommand(msg, via = 'external') {
   switch (msg.command) {
     case 'open-dashboard': return { ok: true, windowId: await openDashboard({ mode: msg.mode || 'popup' }) };
+    case 'access-login': {
+      // cloudflared access login が出した承認 URL を開く。allowlist を通らなければ**開かない**
+      const parsed = parseAccessLoginUrl(msg.url);
+      if (parsed.error) return { ok: false, error: parsed.error };
+      return { ok: true, windowId: await openApprovalWindow(parsed.url) };
+    }
     case 'status':
       // ダッシュボードが開いていればそちらも {type:'status'} を返す。こちらは background 視点
       return { ok: true, version: chrome.runtime.getManifest().version, dashboardOpen: await isDashboardOpen(), alive: await aliveDiag() };
