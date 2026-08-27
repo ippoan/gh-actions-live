@@ -55,17 +55,29 @@ async function openDashboard({ mode = 'popup' } = {}) {
 // ブラウザは承認するだけでよく、Windows の Chrome で承認しても成立する。
 //
 // bridge は tailnet の 8799 で待ち受けていて認証が無い。そこへ到達できる者に
-// 「任意の URL を開かせる」と capability の穴になるので、**開ける URL を絞る**:
-// https で、パスが /cdn-cgi/access/cli **ちょうど** のものだけ。
+// 「任意の URL を開かせる」と capability の穴になるので、**開ける URL を 4 条件で絞る**:
+// (1) https  (2) userinfo が無い  (3) ホストが accessLoginHosts に完全一致
+// (4) パスが /cdn-cgi/access/cli ちょうど。
+// (3) は **deny-by-default** — 未設定 / 空配列なら何も開かない。
+// 「設定が無いから全部通す」は、設定を入れ忘れた環境が一番危険になる最悪の既定なので取らない。
 const ACCESS_LOGIN_PATH = '/cdn-cgi/access/cli';
 
 // 通れば { url }、弾けば { error }。error にクエリを載せない
 // (Access の URL には token=<nonce> が乗っている。出すのはホスト名とパスまで)
-function parseAccessLoginUrl(raw) {
+function parseAccessLoginUrl(raw, hosts) {
   if (typeof raw !== 'string' || !raw.trim()) return { error: 'url required' };
   let u;
   try { u = new URL(raw); } catch { return { error: 'invalid url' }; }
   if (u.protocol !== 'https:') return { error: `scheme not allowed: ${u.protocol} (https only)` };
+  // userinfo は入口で落とす。https://dtako.ippoan.org@evil.example.com/... は
+  // 文字列としては正規のホストに見えるのに、実際に開く先は evil.example.com になる
+  // (なりすまし)。u.host に userinfo は入らないので、ホスト検査だけでは防げない。
+  // 文言に username を含めない — そこに紛らわしいホスト名が入っている
+  if (u.username !== '' || u.password !== '') return { error: 'credentials in url not allowed' };
+  // 完全一致のみ。後方一致 (endsWith('.ippoan.org')) は evil-ippoan.org 型の取り違えを招くので採らない
+  const allow = Array.isArray(hosts) ? hosts.map(h => String(h).trim().toLowerCase()).filter(Boolean) : [];
+  if (!allow.length) return { error: 'accessLoginHosts not configured (deny by default)' };
+  if (!allow.includes(u.host.toLowerCase())) return { error: `host not allowed: ${u.host}` };
   // new URL() は `..` を畳んでから pathname に入れる。その**正規化後**の値で完全一致を見る
   // (前方一致だと .../cdn-cgi/access/cli/../../admin のような書き方を通してしまう)
   if (u.pathname !== ACCESS_LOGIN_PATH) return { error: `path not allowed: ${u.host}${u.pathname}` };
@@ -300,7 +312,8 @@ async function handleCommand(msg, via = 'external') {
     case 'open-dashboard': return { ok: true, windowId: await openDashboard({ mode: msg.mode || 'popup' }) };
     case 'access-login': {
       // cloudflared access login が出した承認 URL を開く。allowlist を通らなければ**開かない**
-      const parsed = parseAccessLoginUrl(msg.url);
+      const { accessLoginHosts } = await chrome.storage.local.get('accessLoginHosts');
+      const parsed = parseAccessLoginUrl(msg.url, accessLoginHosts);
       if (parsed.error) return { ok: false, error: parsed.error };
       return { ok: true, windowId: await openApprovalWindow(parsed.url) };
     }
@@ -335,11 +348,15 @@ async function handleCommand(msg, via = 'external') {
       if (Array.isArray(msg.repos)) patch.repos = msg.repos.map(String).filter(Boolean);
       if (typeof msg.notify === 'boolean') patch.notify = msg.notify;
       if (typeof msg.bridgeUrl === 'string') patch.bridgeUrl = msg.bridgeUrl.trim();
+      // access-login で開いてよいホスト (完全一致 / deny-by-default)。[] を入れれば無効化できる
+      if (Array.isArray(msg.accessLoginHosts)) {
+        patch.accessLoginHosts = msg.accessLoginHosts.map(h => String(h).trim().toLowerCase()).filter(Boolean);
+      }
       await chrome.storage.local.set(patch);
       return { ok: true, applied: patch };
     }
     case 'get-config':
-      return { ok: true, ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl'])), version: chrome.runtime.getManifest().version };
+      return { ok: true, ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl', 'accessLoginHosts'])), version: chrome.runtime.getManifest().version };
     default: return { ok: false, error: 'unknown command: ' + msg.command };
   }
 }

@@ -232,9 +232,24 @@ Windows Chrome 拡張  ──ws://<linux>:8799──▶  ws-bridge.mjs  ──st
 - Cloudflare Access のログイン承認: `curl -X POST localhost:8799/cmd -d '{"command":"access-login","url":"<cloudflared access login が出した URL>"}'`
   で承認ページを前面のウィンドウに開く。トークンを取りに行くのは Linux 側の `cloudflared` 自身なので、
   ブラウザは「Approve」を押すだけでよく、Windows の Chrome で承認しても通る。
-  **開ける URL は https かつパスが `/cdn-cgi/access/cli` ちょうどのものだけ** (完全一致)。
-  bridge には認証が無いので、絞らないと 8799 に届く者が Chrome で任意のページを開けてしまうため。
-  弾いた URL はログにも応答にも全体を出さない (`token=` の nonce が乗っている)
+  bridge には認証が無く、8799 に届く者が Chrome で任意のページを開けると capability の穴になるので、
+  **開ける URL は 3 条件を全部満たすものだけ**:
+  1. スキームが `https:`
+  2. ホストが **`accessLoginHosts` に完全一致** (後方一致・ワイルドカードは無し。
+     `endsWith('.ippoan.org')` 型は `evil-ippoan.org` のような取り違えを招くため)。
+     **未設定・空配列なら全部拒否 (deny-by-default)** — 設定を入れ忘れた環境が一番危険になる既定は採らない
+  3. パスが `/cdn-cgi/access/cli` **ちょうど** (`new URL()` が `..` を畳んだ後の値で完全一致)
+
+  加えて **userinfo 付きの URL は無条件で拒否**する。`https://dtako.ippoan.org@evil.example.com/...`
+  は文字列としては正規のホストに見えるのに実際に開く先は `evil.example.com` で、
+  `URL.host` に userinfo は入らないためホスト検査だけでは防げない (なりすまし)。
+
+  許可ホストの設定 / 確認:
+  ```
+  curl -X POST localhost:8799/cmd -d '{"command":"set-config","accessLoginHosts":["dtako.ippoan.org"]}'
+  curl -X POST localhost:8799/cmd -d '{"command":"get-config"}'   # accessLoginHosts が返る
+  ```
+  弾いた URL はログにも応答にも全体を出さない (`token=` の nonce が乗っている。出すのはホスト名とパスまで)
 - 診断: `curl -X POST localhost:8799/cmd -d '{"command":"status"}'`。ダッシュボードからは
   `{"type":"status", alive:{connected, fails, lastState, lastMessageAt, idleMs, idleLimitMs, idleResets,
   watchdogArmed, idleArmed, reconnectPending, background:{state, lastMessageAt, idleMs, relay:{readyState, tokens, lastFrameAt, sinceLastFrameMs, frames}}}}`、
