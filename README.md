@@ -185,7 +185,7 @@ extension/          MV3 拡張本体 (これを Chrome に読み込む)
 installer/main.wxs  MSI (WiX v4+、perUserOrMachine)。配置 + 自動更新タスク + (ALLUSERS=1 で) Chrome ポリシー
 installer/update.ps1 更新スクリプト (native host / 手動 / 任意でタスク登録)
 installer/host.ps1   native messaging host (「更新」ボタンの実体)
-bridge/             Claude Code (Linux) 側のリレー。依存なし (下記)
+bridge/             Claude Code (Linux) 側の常駐リレー (Rust / systemd --user。下記)
 ```
 
 ## 既知の制約
@@ -214,19 +214,42 @@ chrome.runtime.sendMessage('oaadakmclelmnaieokjbhldfacfckaaj',
 ## Claude Code への途中通知 (bridge)
 
 拡張は GitHub を見ているだけなので、そのままでは Claude Code (別マシン) に何も届かない。
-`bridge/ws-bridge.mjs` を Claude Code 側で動かし、拡張からそこへ **outbound** で WebSocket を
-張ると双方向になる。
+`bridge/` (Rust の常駐サーバー `gh-actions-bridge`) を Linux 側で **1 本だけ** 動かし、拡張からそこへ
+**outbound** で WebSocket を張ると双方向になる。Claude Code の各セッションは bridge に**繋ぐだけ**で、
+bridge 自体を起動しない (セッションが Monitor で起動していた頃は 8799 を取り合い、起動したセッションが
+終わると bridge ごと落ち、全 repo の変化がそのセッションにだけ流れていた)。
 
 ```
-Windows Chrome 拡張  ──ws://<linux>:8799──▶  ws-bridge.mjs  ──stdout──▶  Claude Code (Monitor)
-        ▲                                          │
-        └──────── {"type":"command",...} ◀─────────┘  POST /cmd  /  stdin  /  ?role=listener
+Windows Chrome 拡張 ──ws://<linux>:8799/?role=extension──▶ gh-actions-bridge (systemd --user)
+        ▲                                                        │ ws /watch?repo=…&run=…
+        └──── {"type":"command",...} ◀── POST /cmd               ▼ (条件に合う run だけ、1 フレーム 1 行)
+                                                       Claude Code の各セッション (Monitor の ws ソース)
 ```
 
+導入 (Linux 側、1 回だけ):
+```
+cargo install --path bridge
+cp bridge/gh-actions-bridge.service ~/.config/systemd/user/
+systemctl --user enable --now gh-actions-bridge
+```
+bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --user -u gh-actions-bridge -f`。
+
+- 見張り (`/watch`): セッションごとに条件を付けて繋ぐ。一致した run の変化だけがテキストで届く
+  ```
+  Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan/rust-alc-api&workflow=CI&run=1619" }, ... })
+  ```
+  条件は `repo` / `ref` / `run` / `workflow` (部分一致・大小無視) / `by`。同じ key を重ねると OR、違う key は AND。
+  条件なしは 400 (全量が流れるのを防ぐ。本当に全部見るなら `all=1`)
+  - 繋いだ時点の状態を bridge の写しから出す (進行中の run と、`run` 指定の run)。
+    既に終わった run を指定しても待ちぼうけにならない
+  - `run` を指定すると、その run が全部終わった時点で bridge が socket を閉じる (= Monitor の見張りが終わる)。
+    run 番号は workflow ごとなので `workflow` と併用する。re-run は同じ番号で走り直すので、閉じた後に re-run したら繋ぎ直す
+  - `ref` は完全一致 (拡張が 40 文字で切るので長い branch 名は先頭 40 文字で比べる)。`ref` だけの見張りは閉じない
+  - 拡張 (ダッシュボード) が bridge から外れた / 戻ったときも 1 行出す (目隠しを黙らない)。bridge が落ちれば socket が閉じる
+- 生の JSON が欲しい購読者は `/?role=listener` (繋いだ時点で bridge の写しを snapshot として 1 回受ける。送った JSON は拡張へのコマンド)
 - Linux → 拡張 (設定): `curl -X POST localhost:8799/cmd -d '{"command":"set-config","repos":["owner/repo"],"notify":false}'`
-  で repo を変えられる。`get-config` で現在値を返す
-- 拡張 → Linux: run の状態変化を 1 行ずつ stdout に出す。Claude Code の `Monitor` ツールが
-  それを通知に変える (`Monitor({command: "node bridge/ws-bridge.mjs 8799", persistent: true})`)
+  で repo を変えられる。`get-config` で現在値を返す。**repos は全セッション共通**なので、
+  自分の PR に絞るのは `set-config` ではなく `/watch` の条件で
 - Linux → 拡張: `curl -X POST localhost:8799/cmd -d '{"command":"open-dashboard","mode":"popup"}'`
   でウィンドウを遠隔で開ける。`refresh` / `snapshot` も受ける
 - Cloudflare Access のログイン承認: `curl -X POST localhost:8799/cmd -d '{"command":"access-login","url":"<cloudflared access login が出した URL>"}'`

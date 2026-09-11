@@ -48,9 +48,14 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   watchdog を張る。「`closed`/`error` が来たときだけ再接続」に戻すと CONNECTING で固まって死ぬ (#25)
 - `background.js` の `relayToDashboard` は `{ ...msg, target: 'dashboard' }` (target を後勝ち)。relay の msg には
   `target:'background'` が付いているので逆にすると dashboard が全部捨て、push が一切届かなくなる (#25 の真因、#23〜v0.0.22)
+- **bridge (`bridge/`、Rust) は systemd --user で 1 本だけ常駐させる。セッションの Monitor で起動しない。**
+  セッションが起動していた頃は 8799 を取り合い、起動したセッションが終わると bridge ごと落ち、
+  全 repo の変化がそのセッションにだけ流れた。セッションは `ws /watch?repo=…&run=…` に繋いで絞る。
+  拡張側のプロトコル (`/?role=extension`、`{"type":"ping"}` の keepalive、`POST /cmd`) は Node 版と同じに保つ
+  (変えると拡張の更新が要る)。/watch への keepalive は Ping フレーム (テキストにすると通知になる)
 - 非管理 Windows では HKLM の `ExtensionSettings` を Chrome が捨てる (仕様)。
   「MSI で入らない」は #9 を先に読む
 
 ## 検証
-- CI: JS 構文 / manifest 整合 / `.ps1` BOM / 参照ファイル実在。MSI ビルドは windows-latest
+- CI: JS 構文 / manifest 整合 / `.ps1` BOM / 参照ファイル実在 / bridge の `cargo test`。MSI ビルドは windows-latest
 - 実機でしか分からないもの: MSI の配置先・native host・alive の接続。bridge の `status` で見る
