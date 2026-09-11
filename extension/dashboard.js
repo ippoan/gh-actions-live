@@ -9,8 +9,8 @@
 import { createBridge } from './bridge-client.js';
 import { applySeedConfig } from './seed-config.js';
 import { createAliveWatchdog } from './alive-watchdog.js';
+import { GH, parseRow } from './run-row.js';
 
-const GH = 'https://github.com';
 const parser = new DOMParser();
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
@@ -36,28 +36,7 @@ const log = (...a) => { console.log('[live]', ...a); chrome.runtime.sendMessage(
 const decodeChannel = v => { try { return JSON.parse(atob(v.split('--')[0])).c; } catch { return null; } };
 
 /* ---------------- GitHub 読み取り ---------------- */
-
-// 行 1 つ。aria-label に status / run番号 / workflow名 / title が全部入っている。
-function parseRow(row) {
-  const a = row.querySelector('a[aria-label]');
-  if (!a) return null;
-  const m = (a.getAttribute('aria-label') || '').match(/^([^:]*):\s*Run (\d+) of ([^.]+)\.\s*(.*)$/);
-  if (!m) return null;
-
-  const text = (row.textContent || '').replace(/\s+/g, ' ');
-  const by = text.match(/(?:pushed|triggered|run|opened) by ([\w.\-\[\]]+)/i);
-  const refEl = row.querySelector('a[href*="/tree/"], a[href*="/releases/tag/"], .Label');
-
-  return {
-    checkSuiteId: row.id.replace('check_suite_', ''),
-    runId: (a.getAttribute('href') || '').split('/').pop(),
-    href: GH + (a.getAttribute('href') || ''),
-    status: m[1].trim(), run: m[2], workflow: m[3].trim(), title: m[4].trim(),
-    ref: refEl ? refEl.textContent.trim().slice(0, 40) : '',
-    by: by ? by[1] : '',
-    at: row.querySelector('relative-time')?.getAttribute('datetime') || null
-  };
-}
+// parseRow (run 行 1 つの読み取り) は ./run-row.js へ切り出し済み (Refs ippoan/alc-app-s3#135)
 
 // partial=true のときだけ XHR ヘッダを付ける。
 // フルページに付けると GitHub が断片だけ返し、<head> にある
