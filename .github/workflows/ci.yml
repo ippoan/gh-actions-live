@@ -58,6 +58,17 @@ jobs:
           done
           exit $fail
 
+  # Linux 側の常駐リレー (bridge/、Rust)。拡張の zip / MSI には入らない
+  bridge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo test
+        run: cargo test --locked
+
   # PR (non-draft) から dev prerelease を出す。merge を待たずに MSI を試せる。
   dev-release:
     needs: check
@@ -79,12 +90,13 @@ jobs:
   # 新しい版が Latest として公開される。
   auto-merge:
     name: Auto Merge
-    needs: [check, dev-release]
+    needs: [check, bridge, dev-release]
     if: >-
       always() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.draft == false &&
       needs.check.result == 'success' &&
+      needs.bridge.result == 'success' &&
       needs['dev-release'].result == 'success'
     uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
     permissions:

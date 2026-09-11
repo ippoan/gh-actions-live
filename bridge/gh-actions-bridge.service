@@ -1,0 +1,16 @@
+# systemd --user の unit。セッションから独立して bridge を 1 本だけ常駐させる。
+#   cargo install --path bridge
+#   cp bridge/gh-actions-bridge.service ~/.config/systemd/user/
+#   systemctl --user enable --now gh-actions-bridge
+# ログ (全 repo の変化 + 接続): journalctl --user -u gh-actions-bridge -f
+[Unit]
+Description=gh-actions-live bridge (拡張 と Claude Code の常駐リレー)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.cargo/bin/gh-actions-bridge 8799
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
