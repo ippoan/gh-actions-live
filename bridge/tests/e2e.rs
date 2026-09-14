@@ -19,6 +19,16 @@ async fn start() -> u16 {
     port
 }
 
+async fn start_with_refresh(every: Duration) -> u16 {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let app = gh_actions_bridge::app_with_refresh(port, every).into_make_service_with_connect_info::<std::net::SocketAddr>();
+        axum::serve(l, app).await.unwrap();
+    });
+    port
+}
+
 async fn connect(port: u16, path: &str) -> Ws {
     connect_async(format!("ws://127.0.0.1:{port}{path}")).await.unwrap().0
 }
@@ -37,6 +47,23 @@ async fn next_text(ws: &mut Ws) -> Option<String> {
 
 async fn send(ws: &mut Ws, v: Value) {
     ws.send(Message::Text(v.to_string().into())).await.unwrap();
+}
+
+/// next_text と同じく ping を読み飛ばすが、`dur` 全体で 1 つのタイムアウトを掛ける
+/// (来ないことを確かめたいテスト用。keepalive の即時 ping はここでも読み飛ばす)
+async fn next_text_within(ws: &mut Ws, dur: Duration) -> Result<Option<String>, tokio::time::error::Elapsed> {
+    let deadline = tokio::time::Instant::now() + dur;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let m = tokio::time::timeout(remaining, ws.next()).await?;
+        match m {
+            Some(Ok(Message::Text(t))) if !t.as_str().contains(r#""type":"ping""#) => return Ok(Some(t.to_string())),
+            Some(Ok(Message::Text(_))) => continue,
+            Some(Ok(Message::Close(_))) | None => return Ok(None),
+            Some(Err(_)) => return Ok(None),
+            _ => continue,
+        }
+    }
 }
 
 #[tokio::test]
@@ -96,4 +123,28 @@ async fn watch_says_when_dashboard_is_missing_and_cmd_reaches_extension() {
 
     drop(ext);
     assert!(next_text(&mut w).await.unwrap().contains("外れた"));
+}
+
+#[tokio::test]
+async fn auto_refresh_reaches_dashboard() {
+    let port = start_with_refresh(Duration::from_millis(200)).await;
+    let mut ext = connect(port, "/?role=extension").await;
+    let got = tokio::time::timeout(Duration::from_secs(1), next_text(&mut ext)).await.expect("1 秒以内に refresh が来るはず");
+    assert_eq!(got, Some(json!({ "type": "command", "command": "refresh" }).to_string()));
+}
+
+#[tokio::test]
+async fn auto_refresh_does_not_reach_extension_bg() {
+    let port = start_with_refresh(Duration::from_millis(200)).await;
+    let mut bg = connect(port, "/?role=extension-bg").await;
+    let got = next_text_within(&mut bg, Duration::from_millis(700)).await;
+    assert!(got.is_err(), "extension-bg には refresh が届かないはず: {got:?}");
+}
+
+#[tokio::test]
+async fn auto_refresh_skips_the_immediate_tick() {
+    let port = start_with_refresh(Duration::from_millis(200)).await;
+    let mut ext = connect(port, "/?role=extension").await;
+    let got = next_text_within(&mut ext, Duration::from_millis(100)).await;
+    assert!(got.is_err(), "起動直後 (100ms 以内) には refresh が来ないはず: {got:?}");
 }

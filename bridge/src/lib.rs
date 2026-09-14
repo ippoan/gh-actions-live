@@ -14,6 +14,9 @@
 //! 全 repo の変化が起動したセッションにだけ流れていた。
 //!
 //! stdout には全 repo の変化を 1 行ずつ、接続・切断などは stderr に出す (どちらも journal に入る)。
+//!
+//! bridge は 5 分ごとにダッシュボードへ `refresh` を送る。alive socket が黙って変化を
+//! 取りこぼしたときに Actions ページを取り直させるため。
 
 pub mod watch;
 
@@ -221,6 +224,10 @@ fn close_done() -> Message {
 }
 
 pub fn app(port: u16) -> Router {
+    app_with_refresh(port, Duration::from_secs(300))
+}
+
+pub fn app_with_refresh(port: u16, every: Duration) -> Router {
     let hub: Shared = Arc::new(Mutex::new(Hub {
         port,
         next_id: 0,
@@ -229,6 +236,7 @@ pub fn app(port: u16) -> Router {
         runs: HashMap::new(),
     }));
     tokio::spawn(keepalive(hub.clone()));
+    tokio::spawn(auto_refresh(hub.clone(), every));
     Router::new()
         .route("/", get(root))
         .route("/watch", get(watch_ws))
@@ -328,6 +336,20 @@ async fn keepalive(hub: Shared) {
         for w in h.watchers.values() {
             let _ = w.tx.send(Message::Ping(Default::default()));
         }
+    }
+}
+
+// alive socket が黙って変化を取りこぼしたときの保険。5 分ごとにダッシュボードへ
+// {"type":"command","command":"refresh"} を送り、boot() で Actions ページを取り直させる。
+// 送り先はダッシュボード (role == "extension") だけ — is_ext は extension-bg にも届くので使わない。
+// 起動直後の即時 tick は捨てる (interval の最初の tick はすぐ来るため)
+async fn auto_refresh(hub: Shared, every: Duration) {
+    let mut every = tokio::time::interval(every);
+    every.tick().await; // 起動直後の即時 tick を捨てる
+    loop {
+        every.tick().await;
+        let msg = json!({ "type": "command", "command": "refresh" });
+        hub.lock().unwrap().send_role(|r| r == "extension", &msg);
     }
 }
 
