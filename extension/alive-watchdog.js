@@ -24,6 +24,9 @@ export function createAliveWatchdog({
   boot = () => {},               // () => void | Promise   ページを取り直してトークンを更新 (5 回に 1 回)
   handshakeMs = 20000,           // connect 後これ以内に open/subscribed/ack が来なければ失敗
   idleLimitMs = 10 * 60000,      // 接続中にこれだけ何も受け取らなければ死んだ扱いで張り直す (0 で無効)
+  // open/subscribed (自分側の出来事) だけでは fails/backoff を戻さない。サーバーから
+  // 実フレームを受けるか、接続がこれだけ生き延びたら戻す (#c135-26)
+  survivedMs = 60000,
   baseBackoff = 4000,
   maxBackoff = 5 * 60000,
   bootEvery = 5,
@@ -44,28 +47,48 @@ export function createAliveWatchdog({
     idleResets: 0,               // idle 判定で張り直した回数
     watchdogArmed: false,
     idleArmed: false,
+    survivedArmed: false,
     reconnectPending: false,
     nextRetryAt: null
   };
-  let watchTimer = null, reconnTimer = null, idleTimer = null;
+  let watchTimer = null, reconnTimer = null, idleTimer = null, survivedTimer = null;
+  // 今の接続が open/subscribed した時刻 (自己申告)。lastMessageAt (サーバーからの実フレーム)
+  // が無いあいだの idle 判定の起点として使う。lastMessageAt と違い、フレームが無くても
+  // 更新されない = idle 経過時間がちゃんと積み上がる (lastMessageAt を起点にすると
+  // 「フレームを受けた」と誤認させてしまうため、こちらは別に持つ)
+  let connectedSince = null;
 
   const changed = () => { try { onChange(st); } catch {} };
   const safe = (fn, label) => { try { const r = fn?.(); if (r?.catch) r.catch(e => log(label, String(e))); } catch (e) { log(label, String(e)); } };
 
   function disarm() { clearTimeout(watchTimer); watchTimer = null; st.watchdogArmed = false; }
   function clearIdle() { clearTimeout(idleTimer); idleTimer = null; st.idleArmed = false; }
+  function clearSurvived() { clearTimeout(survivedTimer); survivedTimer = null; st.survivedArmed = false; }
+
+  // open/subscribed (自分側の出来事) の後に張る。サーバーからの実フレームを待たずとも、
+  // 接続が survivedMs 生き延びたら「繰り返し切断ではない」とみなして fails/backoff を戻す
+  function armSurvived() {
+    clearSurvived();
+    st.survivedArmed = true;
+    survivedTimer = setTimeout(() => {
+      survivedTimer = null; st.survivedArmed = false;
+      if (!st.connected) return;
+      st.fails = 0; st.backoff = baseBackoff;
+      changed();
+    }, survivedMs);
+  }
 
   // 接続中のあいだだけ張る。最後の受信から idleLimitMs で発火し、まだ idle でなければ残り時間で張り直す
   function armIdle() {
     clearIdle();
     if (!idleLimitMs || !st.connected) return;
-    const base = st.lastMessageAt ?? now();
+    const base = st.lastMessageAt ?? connectedSince ?? now();
     const wait = Math.max(1000, base + idleLimitMs - now());
     st.idleArmed = true;
     idleTimer = setTimeout(() => {
       idleTimer = null; st.idleArmed = false;
       if (!st.connected) return;
-      const idle = now() - (st.lastMessageAt ?? now());
+      const idle = now() - (st.lastMessageAt ?? connectedSince ?? now());
       if (idle < idleLimitMs) { armIdle(); return; }
       // OPEN のまま何も来ない = half-open の疑い。send では確かめられないので張り直して確認する
       st.idleResets++;
@@ -100,7 +123,8 @@ export function createAliveWatchdog({
   function fail(note) {
     st.connected = false;
     st.note = note;
-    disarm(); clearIdle();
+    connectedSince = null;
+    disarm(); clearIdle(); clearSurvived();
     if (reconnTimer) { changed(); return; }
     st.fails++;
     const wait = st.backoff;
@@ -126,18 +150,32 @@ export function createAliveWatchdog({
     st.lastState = msg.state; st.lastStateAt = now();
     if (msg.state === 'open' || msg.state === 'subscribed' || msg.state === 'ack') {
       st.connected = true; st.note = '';
-      st.fails = 0; st.backoff = baseBackoff;
-      // ack は alive からのフレームそのもの。open/subscribed は自分側の出来事だが、
-      // 繋ぎ直した直後に idle 判定が走らないよう起点として同じく now を入れる
-      st.lastMessageAt = now();
-      disarm(); cancelReconnect(); armIdle();
+      if (connectedSince == null) connectedSince = now();
+      disarm(); cancelReconnect();
+      if (msg.state === 'ack') {
+        // サーバーからの実フレーム。ここでだけ即座に fails/backoff を戻し、lastMessageAt を進める
+        clearSurvived();
+        st.fails = 0; st.backoff = baseBackoff;
+        st.lastMessageAt = now();
+      } else {
+        // open/subscribed は自分側の出来事。4 秒 backoff の繰り返し (切断→即再接続→切断…) を
+        // 「繋がった」と誤認しないよう、fails/backoff は戻さない。armIdle の起点だけは now
+        // にしておく (繋ぎ直した直後に idle 判定が走らないため)
+        armSurvived();
+      }
+      armIdle();
     } else if (msg.state === 'closed' && msg.byUs) {
       // 自分 (watchdog / reset / 握手タイムアウト) が閉じた。続きの connect は呼び出し側が行う
-      st.connected = false; clearIdle();
+      st.connected = false; connectedSince = null; clearIdle(); clearSurvived();
       if (!st.note) st.note = `切断 (${msg.byUs})`;
     } else if (msg.state === 'closed' || msg.state === 'error') {
       // code 無しの closed は background からの「タブが消えた」(#36)。reason (tab-closed / tab-gone) を note に出す
-      fail(msg.state === 'closed' ? `切断 ${msg.code ?? msg.reason ?? ''}`.trim() : (msg.error || 'error'));
+      // 1009 (Message Too Big) は購読フレームが大きすぎて切られたもの。1 で直っていれば
+      // 起きない想定だが、起きたときに 4 秒の繰り返しにしないよう note で分かるようにする
+      const note = msg.state === 'closed'
+        ? (msg.code === 1009 ? '購読が大きすぎる (1009)' : `切断 ${msg.code ?? msg.reason ?? ''}`.trim())
+        : (msg.error || 'error');
+      fail(note);
       return;
     } else if (msg.state === 'connecting') {
       st.connected = false;
@@ -159,8 +197,8 @@ export function createAliveWatchdog({
 
   // 強制的に張り直す (bridge の alive-reset / ユーザー操作)。バックオフもリセット
   function reset(reason = 'reset') {
-    disarm(); cancelReconnect(); clearIdle();
-    st.fails = 0; st.backoff = baseBackoff; st.connected = false; st.note = '';
+    disarm(); cancelReconnect(); clearIdle(); clearSurvived();
+    st.fails = 0; st.backoff = baseBackoff; st.connected = false; st.note = ''; connectedSince = null;
     safe(close, 'close');
     request(reason);
   }
@@ -188,5 +226,5 @@ export function createAliveWatchdog({
 
   return { state: st, onStatus, onMessage, onConnectError, onBoot, ensure, reset, snapshot,
            get armed() { return !!watchTimer; }, get pending() { return !!reconnTimer; },
-           get idlePending() { return !!idleTimer; } };
+           get idlePending() { return !!idleTimer; }, get survivedPending() { return !!survivedTimer; } };
 }

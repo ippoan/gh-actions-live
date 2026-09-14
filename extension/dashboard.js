@@ -10,6 +10,7 @@ import { createBridge } from './bridge-client.js';
 import { applySeedConfig } from './seed-config.js';
 import { createAliveWatchdog } from './alive-watchdog.js';
 import { GH, parseRow } from './run-row.js';
+import { replaceRepoChannels, mergeRepoChannels, dropReposNotIn, allTokens, repoForTopic } from './channel-store.js';
 
 const parser = new DOMParser();
 const $ = id => document.getElementById(id);
@@ -18,8 +19,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt
 const state = {
   repos: [],
   socketUrl: null,
-  tokenByTopic: new Map(),   // topic -> 署名済み data-channel
-  repoByTopic: new Map(),    // topic -> "owner/repo"
+  tokenByTopicByRepo: new Map(),   // repo -> Map(topic -> 署名済み data-channel)。repo の読み込みで作り直す (#c135-26)
   runs: new Map(),           // "repo#checkSuiteId" -> run
   pending: new Map(),
   connected: false,          // alive watchdog から同期される (render / status 用)
@@ -50,15 +50,19 @@ async function fetchDoc(path, { partial = false } = {}) {
   return parser.parseFromString(await r.text(), 'text/html');
 }
 
-function ingestChannels(doc, repo) {
+// mode: 'replace' (Actions ページのフル読み込み。その repo の分を作り直す) |
+//       'merge' (1 run だけの partial 読み込み。一覧全体を表さないので足すだけ)
+function ingestChannels(doc, repo, mode = 'replace') {
+  const entries = [];
   for (const el of doc.querySelectorAll('[data-channel]')) {
     const v = el.getAttribute('data-channel');
     const topic = decodeChannel(v);
     if (!topic) continue;
     if (!topic.startsWith('workflow_runs:') && !topic.startsWith('check_suites:')) continue;
-    state.tokenByTopic.set(topic, v);   // 発行時刻 t が新しいものに毎回上書き
-    state.repoByTopic.set(topic, repo);
+    entries.push([topic, v]);
   }
+  if (mode === 'merge') mergeRepoChannels(state.tokenByTopicByRepo, repo, entries);
+  else replaceRepoChannels(state.tokenByTopicByRepo, repo, entries);
 }
 
 function apply(repo, r) {
@@ -100,7 +104,7 @@ async function refreshRun(repo, checkSuiteId) {
   const doc = await fetchDoc(`/${repo}/actions/workflow-run/${checkSuiteId}`, { partial: true });
   const row = doc.querySelector('.Box-row[id^="check_suite_"]');
   if (!row) return [];
-  ingestChannels(doc, repo);
+  ingestChannels(doc, repo, 'merge');   // 1 run 分の断片。repo の分を丸ごと置き換えない
   const r = parseRow(row);
   if (!r) return [];
   const ev = apply(repo, r);
@@ -132,7 +136,7 @@ async function announce(events) {
 // ここは socket URL と購読トークンを background に渡し、結果を受け取るだけ。
 function connect() {
   if (!state.socketUrl) { alive.onConnectError('socket URL 無し'); return; }
-  const tokens = [...state.tokenByTopic.values()];
+  const tokens = [...allTokens(state.tokenByTopicByRepo).values()];
   return chrome.runtime.sendMessage({ target: 'background', type: 'alive-connect', url: state.socketUrl, tokens })
     .then(r => { if (!r?.ok) alive.onConnectError(r?.error || 'タブに接続できない'); })
     .catch(e => alive.onConnectError(e));
@@ -178,7 +182,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       chrome.storage.local.set({ rawSamples: [String(msg.data).slice(0, 1000), ...rawSamples].slice(0, 50) }));
 
     const topic = m.ch ? (decodeChannel(m.ch) || m.ch) : null;
-    const repo = topic ? state.repoByTopic.get(topic) : null;
+    const repo = topic ? repoForTopic(state.tokenByTopicByRepo, topic) : null;
     if (topic?.startsWith('check_suites:') && repo) {
       const id = topic.split(':')[1];
       debounce(topic, () => refreshRun(repo, id).then(announce).catch(err => log('refreshRun', String(err))));
@@ -318,7 +322,7 @@ async function sendStatus() {
   bridge.send({ type: 'status',
     version: chrome.runtime.getManifest().version,
     alive: { connected: w.connected, hasSocketUrl: !!state.socketUrl,
-             subscribedTopics: state.tokenByTopic.size, note: w.note,
+             subscribedTopics: allTokens(state.tokenByTopicByRepo).size, note: w.note,
              fails: w.fails, backoffMs: w.backoff,
              lastState: w.lastState, lastStateAt: w.lastStateAt ? new Date(w.lastStateAt).toISOString() : null,
              lastConnectAt: w.lastConnectAt ? new Date(w.lastConnectAt).toISOString() : null,
@@ -357,6 +361,7 @@ async function boot() {
   await applySeedConfig(log);   // インストーラーが書いた config.json があれば取り込む
   const { repos = [] } = await chrome.storage.local.get('repos');
   state.repos = repos;
+  dropReposNotIn(state.tokenByTopicByRepo, repos);   // set-config で repo を減らしたとき、外れた分を捨てる
   // repo が空でもリレーには繋ぐ (Linux 側から set-config できるように)。
   // 以前はここで return していて、repo 未設定だと bridge が「—」のまま動かなかった。
   bridge.ensure();

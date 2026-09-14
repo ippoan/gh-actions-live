@@ -33,14 +33,44 @@
   let lastFrameAt = 0;
   let frames = 0;
 
+  // 購読を分割して送る上限 (#c135-26)。全トークンを 1 フレームに詰めると GitHub 側の
+  // 上限を超えて 1009 (Message Too Big) で切られる。上限の実寸は分かっていないので、
+  // 件数と JSON にしたときの長さのどちらかに達したら区切る。テストから差し替えられるよう
+  // relay に乗せておく (単なる module 内 const だと vm 越しに上書きできない)。
+  relay.subscribeMaxTokensPerFrame = 50;
+  relay.subscribeMaxFrameChars = 8000;
+
+  // このソケットへ既に送った購読トークン。OPEN 中の再購読はこれの差分だけを送る。
+  // 張り直したら (新しい WebSocket を作ったら) 空にする
+  let sentTokens = new Set();
+
   function post(msg) { try { chrome.runtime.sendMessage({ target: 'background', instance: relay.instance, ...msg }); } catch {} }
 
   function subscribe() {
     if (ws?.readyState !== WebSocket.OPEN || !tokens.length) return;
-    const subscribe = {};
-    for (const t of tokens) subscribe[t] = null;
-    ws.send(JSON.stringify({ subscribe }));
-    post({ type: 'alive-status', state: 'subscribed', count: tokens.length });
+    const pending = tokens.filter(t => !sentTokens.has(t));
+    if (!pending.length) return;
+
+    let batch = {};
+    let count = 0;
+    const flush = () => {
+      if (!count) return;
+      ws.send(JSON.stringify({ subscribe: batch }));
+      for (const t of Object.keys(batch)) sentTokens.add(t);
+      post({ type: 'alive-status', state: 'subscribed', count });
+      batch = {}; count = 0;
+    };
+    for (const t of pending) {
+      const trial = { ...batch, [t]: null };
+      const tooBig = count > 0 && (
+        count >= relay.subscribeMaxTokensPerFrame ||
+        JSON.stringify(trial).length > relay.subscribeMaxFrameChars
+      );
+      if (tooBig) flush();
+      batch[t] = null;
+      count++;
+    }
+    flush();
   }
 
   // 自分で閉じる。onclose には byUs を付けて報告し、ダッシュボード側が
@@ -74,7 +104,7 @@
     catch (e) { post({ type: 'alive-status', state: 'error', error: String(e) }); return; }
     ws = sock;
     connectingSince = Date.now();
-    lastFrameAt = 0; frames = 0;
+    lastFrameAt = 0; frames = 0; sentTokens = new Set();
     post({ type: 'alive-status', state: 'connecting', readyState: sock.readyState, sinceMs: 0 });
 
     clearTimeout(handshakeTimer);

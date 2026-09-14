@@ -116,14 +116,62 @@ test('CONNECTING 中に connect が来たら黙らず connecting (readyState / s
   assert.equal(st[0].sinceMs, 3000);
 });
 
-test('OPEN 中の connect は新しいトークンで購読し直すだけ', async () => {
+test('OPEN 中の再購読は未送信分だけを送る (#c135-26)', async () => {
   const env = makeEnv(); env.run();
   await env.send({ target: 'alive-relay', type: 'connect', url: 'wss://alive/x', tokens: ['a'] });
   env.sockets[0]._open();
+  assert.deepEqual(JSON.parse(env.sockets[0].sent[0]), { subscribe: { a: null } });
   await env.send({ target: 'alive-relay', type: 'connect', tokens: ['a', 'b', 'c'] });
   assert.equal(env.sockets.length, 1);
-  assert.deepEqual(JSON.parse(env.sockets[0].sent[1]), { subscribe: { a: null, b: null, c: null } });
+  // 既に送った 'a' は含めず、まだ送っていない 'b'・'c' だけを送る
+  assert.deepEqual(JSON.parse(env.sockets[0].sent[1]), { subscribe: { b: null, c: null } });
   assert.equal(env.statuses().filter(s => s === 'subscribed').length, 2);
+  // 増えていないトークンでの再購読 (連打) は何も送らない
+  await env.send({ target: 'alive-relay', type: 'connect', tokens: ['a', 'b', 'c'] });
+  assert.equal(env.sockets[0].sent.length, 2);
+});
+
+test('張り直したら全部送り直す (#c135-26)', async () => {
+  const env = makeEnv(); env.run();
+  await env.send({ target: 'alive-relay', type: 'connect', url: 'wss://alive/x', tokens: ['a', 'b'] });
+  env.sockets[0]._open();
+  assert.deepEqual(JSON.parse(env.sockets[0].sent[0]), { subscribe: { a: null, b: null } });
+  await env.send({ target: 'alive-relay', type: 'close', reason: 'idle' });
+  await env.send({ target: 'alive-relay', type: 'connect', tokens: ['a', 'b'] });
+  env.sockets[1]._open();
+  assert.equal(env.sockets.length, 2);
+  // 新しい socket なので送信済み集合は空 → 全部送り直す
+  assert.deepEqual(JSON.parse(env.sockets[1].sent[0]), { subscribe: { a: null, b: null } });
+});
+
+test('購読は 50 件/フレームで分割する (トークン 120 件 → 50/50/20)', async () => {
+  const env = makeEnv(); env.run();
+  const tokens = Array.from({ length: 120 }, (_, i) => `tok-${i}`);
+  await env.send({ target: 'alive-relay', type: 'connect', url: 'wss://alive/x', tokens });
+  env.sockets[0]._open();
+  const sent = env.sockets[0].sent.map(s => JSON.parse(s).subscribe);
+  assert.equal(sent.length, 3);
+  assert.deepEqual(sent.map(s => Object.keys(s).length), [50, 50, 20]);
+  // 全部合わせると元のトークン全件になる
+  const all = new Set(sent.flatMap(s => Object.keys(s)));
+  assert.equal(all.size, 120);
+  for (const t of tokens) assert.ok(all.has(t));
+  assert.equal(env.statuses().filter(s => s === 'subscribed').length, 3);
+});
+
+test('1 件が長いトークンだと 8,000 文字の区切りが件数より先に効く', async () => {
+  const env = makeEnv(); env.run();
+  const big = 'x'.repeat(7990);   // これ単体でほぼ上限いっぱい
+  const tokens = ['a', 'b', big, 'c', 'd'];
+  await env.send({ target: 'alive-relay', type: 'connect', url: 'wss://alive/x', tokens });
+  env.sockets[0]._open();
+  const sent = env.sockets[0].sent.map(s => JSON.parse(s).subscribe);
+  // 'a','b' で 1 本、big 単体で 1 本 (先に文字数で切れる)、'c','d' で 1 本
+  assert.equal(sent.length, 3);
+  assert.deepEqual(Object.keys(sent[0]), ['a', 'b']);
+  assert.deepEqual(Object.keys(sent[1]), [big]);
+  assert.deepEqual(Object.keys(sent[2]), ['c', 'd']);
+  for (const frame of env.sockets[0].sent) assert.ok(frame.length <= 8000 || Object.keys(JSON.parse(frame).subscribe).length === 1);
 });
 
 test('close コマンドで閉じると onclose は byUs 付き、ping は socket 無し', async () => {
