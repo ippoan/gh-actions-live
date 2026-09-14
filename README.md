@@ -186,6 +186,8 @@ installer/main.wxs  MSI (WiX v4+、perUserOrMachine)。配置 + 自動更新タ�
 installer/update.ps1 更新スクリプト (native host / 手動 / 任意でタスク登録)
 installer/host.ps1   native messaging host (「更新」ボタンの実体)
 bridge/             Claude Code (Linux) 側の常駐リレー (Rust / systemd --user。下記)
+mods/pr-bridge-watch Claude Mod: PR を作ったら branch の CI を bridge の /watch に繋ぐ (下記)
+.claude-plugin/     上の mod を配る plugin marketplace
 ```
 
 ## 既知の制約
@@ -291,3 +293,32 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
 - service worker も 1 本張っていて、ダッシュボードが閉じていても `open-dashboard` を受けられる
   (リレーの 20 秒 ping → pong の往来で MV3 の service worker が生き続ける)
 - 認証は無い。tailnet / LAN 内で使う前提。外に出すなら前段に Access 等を置く
+
+## PR を作ったら bridge に自動で繋ぐ (Claude Mod)
+
+`mods/pr-bridge-watch` は Claude Code の **function hooks** (製品名 Claude Mods、early access) で書いた plugin。
+Bash の `tool.call` を包み、`gh pr create` / `pr-push.sh` が成功して PR の URL が出たら:
+
+1. `gh pr view <url> --json headRefName` で branch を取る (失敗したら command の `--head`)
+2. bridge の `GET /` で生死を見る
+3. `$.tool.call({ tool: 'Monitor', ws: { url: 'ws://127.0.0.1:8799/watch?repo=…&ref=<branch>' }, persistent: true })`
+4. 結果に context を 1 行足す (「繋いだ (task …)。gh run list で polling しない」)
+
+bridge が落ちている / Monitor が拒否されたときは張らずに、自分で張る `Monitor(...)` の引数を context に書く
+(見張りが黙って欠けるより model に拾わせる)。同じセッションで同じ branch は二度張らない。
+
+導入 (Claude Code 2.1.260 以上。function hooks は既定 off):
+```
+# ~/.claude/settings.json の env に "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" (起動中のセッションにも効く)
+claude plugin marketplace add ippoan/gh-actions-live
+claude plugin install pr-bridge-watch@gh-actions-live
+```
+bridge が別ホストなら userConfig の `bridgeUrl` (既定 `ws://127.0.0.1:8799`) を変える。
+
+開発: 型は build ごとに生成する (commit しない。`mods/*/types/` は gitignore)。
+```
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p "/plugin-types mods/pr-bridge-watch/types"
+tsc -p mods/pr-bridge-watch/tsconfig.json
+claude plugin validate mods/pr-bridge-watch
+npm test    # test/pr-bridge-watch.test.mjs が偽の $ で register を回す (Node 24 の type stripping で .ts を直接 import)
+```

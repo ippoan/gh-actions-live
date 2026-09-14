@@ -1,0 +1,16 @@
+{
+  "name": "gh-actions-live",
+  "owner": {
+    "name": "ippoan"
+  },
+  "plugins": [
+    {
+      "name": "pr-bridge-watch",
+      "source": "./mods/pr-bridge-watch",
+      "description": "PR を作ったら branch の CI を gh-actions-bridge の /watch に Monitor で繋ぐ Claude Mod (要 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1)"
+    }
+  ],
+  "metadata": {
+    "description": "gh-actions-live の Claude Code 側プラグイン (Claude Mods)"
+  }
+}
