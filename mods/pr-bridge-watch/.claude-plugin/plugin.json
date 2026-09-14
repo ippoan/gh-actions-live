@@ -1,0 +1,15 @@
+{
+  "name": "pr-bridge-watch",
+  "version": "0.1.0",
+  "description": "gh pr create / pr-push.sh で PR ができたら、その branch の CI を gh-actions-bridge の ws /watch に Monitor で繋ぐ Claude Mod (function hooks)",
+  "author": { "name": "ippoan" },
+  "userConfig": {
+    "bridgeUrl": {
+      "type": "string",
+      "title": "bridge URL",
+      "description": "gh-actions-bridge の WebSocket URL (/watch を足して繋ぐ)",
+      "default": "ws://127.0.0.1:8799",
+      "required": false
+    }
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "description": "PR 作成の Bash を tool.call で包み、成功したら PR の branch を bridge の /watch に Monitor で繋ぐ",
+  "modules": ["./register.ts"]
+}
