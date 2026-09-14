@@ -124,16 +124,56 @@ test('connect の送信自体が失敗したら (タブ無し等) バックオ�
   assert.deepEqual(calls, ['close', 'connect']);
 });
 
-test('接続できたら fails / backoff が戻る', () => {
+test('open/subscribed だけでは fails / backoff は戻らない (#c135-26)', () => {
   const { w, clock } = setup();
   w.onBoot();
   clock.advance(20000); clock.advance(4000);
   clock.advance(20000); clock.advance(8000);
   assert.equal(w.state.fails, 2);
+  w.onStatus({ state: 'open' });
   w.onStatus({ state: 'subscribed', count: 3 });
+  assert.equal(w.state.fails, 2);           // 4 秒 backoff の繰り返しを「繋がった」と誤認しない
+  assert.equal(w.state.backoff, 16000);
+  assert.equal(w.pending, false);
+  assert.equal(w.state.connected, true);
+});
+
+test('サーバーからの実フレーム (ack) で fails / backoff が戻る (#c135-26)', () => {
+  const { w, clock } = setup();
+  w.onBoot();
+  clock.advance(20000); clock.advance(4000);
+  clock.advance(20000); clock.advance(8000);
+  assert.equal(w.state.fails, 2);
+  w.onStatus({ state: 'open' });
+  w.onStatus({ state: 'ack' });
   assert.equal(w.state.fails, 0);
   assert.equal(w.state.backoff, 4000);
   assert.equal(w.pending, false);
+});
+
+test('60 秒生き延びたら fails / backoff が戻る (#c135-26)', () => {
+  const { w, clock } = setup({ survivedMs: 60000 });
+  w.onBoot();
+  clock.advance(20000); clock.advance(4000);
+  clock.advance(20000); clock.advance(8000);
+  assert.equal(w.state.fails, 2);
+  w.onStatus({ state: 'open' });
+  clock.advance(59999);
+  assert.equal(w.state.fails, 2);           // まだ 60 秒経っていない
+  clock.advance(1);
+  assert.equal(w.state.fails, 0);
+  assert.equal(w.state.backoff, 4000);
+});
+
+test('60 秒経つ前に切断すると生存タイマーは止まる (後から発火して戻すことが無い) (#c135-26)', () => {
+  const { w, clock } = setup({ survivedMs: 60000 });
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  assert.equal(w.survivedPending, true);
+  clock.advance(30000);
+  w.onStatus({ state: 'closed', code: 1006 });   // 30 秒で切れた。生存扱いにしない
+  assert.equal(w.state.fails, 1);
+  assert.equal(w.survivedPending, false);        // 前の接続の生存タイマーは止めてある
 });
 
 test('接続済みの boot は close せず connect (購読し直し) だけ', () => {
@@ -298,6 +338,11 @@ test('snapshot に lastMessageAt / idleMs / idleLimitMs が出る (bridge の st
   assert.equal(w.snapshot().lastMessageAt, null);
   assert.equal(w.snapshot().idleMs, null);
   w.onStatus({ state: 'open' });
+  // open (自分側の出来事) だけでは lastMessageAt は進まない (#c135-26)
+  assert.equal(w.snapshot().lastMessageAt, null);
+  assert.equal(w.snapshot().idleMs, null);
+  clock.advance(90000);
+  w.onStatus({ state: 'ack' });               // サーバーからの実フレームでだけ進む
   const at = clock.now();
   clock.advance(90000);
   const s = w.snapshot();
@@ -355,4 +400,25 @@ test('background からの「タブが消えた」closed (code 無し・reason �
   assert.equal(w.pending, true);                        // バックオフ付きで再接続を予約
   clock.advance(4000);
   assert.deepEqual(calls, ['close', 'connect']);        // connect → background の ensureAliveTab がタブを開き直す
+});
+
+test('close code 1009 (購読が大きすぎる) は fails を積み backoff を伸ばし、note に出す (#c135-26)', () => {
+  const { w, clock, calls } = setup();
+  w.onBoot();
+  w.onStatus({ state: 'open' });
+  calls.length = 0;
+  w.onStatus({ state: 'closed', code: 1009, reason: 'Message Too Big' });
+  assert.equal(w.state.connected, false);
+  assert.match(w.state.note, /1009/);
+  assert.equal(w.state.fails, 1);
+  assert.equal(w.pending, true);
+  const wait1 = w.state.backoff;
+  clock.advance(wait1);
+  assert.deepEqual(calls, ['close', 'connect']);
+  // 直らずにまた 1009 で切れても、4 秒の繰り返しにはならず backoff が伸び続ける
+  calls.length = 0;
+  w.onStatus({ state: 'open' });
+  w.onStatus({ state: 'closed', code: 1009 });
+  assert.equal(w.state.fails, 2);
+  assert.ok(w.state.backoff > wait1);
 });
