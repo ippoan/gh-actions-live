@@ -59,6 +59,9 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   (`$.process.run` / `$.http.fetch` / `$.tool.call`) 経由。判定は `pr-watch.ts` に純粋関数で置き、
   import は `.ts` 拡張子付き (Node 24 の `npm test` が直接読むため)。型 (`/plugin-types`) は build ごとに
   生成し commit しない。API は early access で release ごとに変わりうる → 壊れたら型を再生成して `tsc`
+  `$` は変数に代入できない (`plugin validate` が拒否。module が読まれない)。dispatch を越える timer は
+  `session.start` で `$.clock.every(…)` 等の閉包 (`Host`) を作って持つ。persistent な Monitor を残すと
+  `archive_session` が「live work」で畳めないので、PR close / self-archive で必ず TaskStop する
 
 ## 検証
 - CI: JS 構文 / manifest 整合 / `.ps1` BOM / 参照ファイル実在 / bridge の `cargo test`。MSI ビルドは windows-latest

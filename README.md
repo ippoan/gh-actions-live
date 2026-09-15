@@ -307,6 +307,16 @@ Bash の `tool.call` を包み、`gh pr create` / `pr-push.sh` が成功して P
 bridge が落ちている / Monitor が拒否されたときは張らずに、自分で張る `Monitor(...)` の引数を context に書く
 (見張りが黙って欠けるより model に拾わせる)。同じセッションで同じ branch は二度張らない。
 
+**Monitor は archive の前に止める。** `ref` の /watch は bridge が閉じないが、`archive_session` は生きた
+background task を持つセッションを畳まない (`still has live work`)。放っておくと見張りが archive を塞ぐので:
+
+- PR の state を 60 秒ごとに `gh pr view --json state` で見て、MERGED / CLOSED になったら `TaskStop`
+  (Auto-archive on PR close や親の `archive_session` が通るようになる)
+- `archive_session { session_id: "self" }` の `tool.call` を包み、先に全部の Monitor を止めてから通す
+
+どちらも task ID (Monitor の結果) が取れたときだけ。取れなければ context に「自分で TaskStop」と書く。
+installed plugin は起動中のセッションでは読み直されない (更新は新しいセッションから効く)。
+
 導入 (Claude Code 2.1.260 以上。function hooks は既定 off):
 ```
 # ~/.claude/settings.json の env に "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" (起動中のセッションにも効く)

@@ -36,3 +36,15 @@ export function watchUrlOf(bridge: string, repo: string, ref: string): string {
 export function statusUrlOf(bridge: string): string {
   return bridge.replace(/^ws(s?):/, 'http$1:').replace(/\/+$/, '') + '/'
 }
+
+/** `gh pr view --json state` の値で、見張りを畳んでよい (もう CI を待たない) か */
+export function isPrClosedState(state: string): boolean {
+  return state === 'MERGED' || state === 'CLOSED'
+}
+
+export const ARCHIVE_TOOL = 'mcp__ccd_session_mgmt__archive_session'
+
+/** `archive_session` がこのセッション自身を畳む呼び出しか */
+export function isSelfArchive(tool: string, input: { session_id?: unknown }): boolean {
+  return tool === ARCHIVE_TOOL && input.session_id === 'self'
+}
