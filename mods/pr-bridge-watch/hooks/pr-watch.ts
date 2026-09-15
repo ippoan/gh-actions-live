@@ -37,14 +37,31 @@ export function statusUrlOf(bridge: string): string {
   return bridge.replace(/^ws(s?):/, 'http$1:').replace(/\/+$/, '') + '/'
 }
 
-/** `gh pr view --json state` の値で、見張りを畳んでよい (もう CI を待たない) か */
-export function isPrClosedState(state: string): boolean {
-  return state === 'MERGED' || state === 'CLOSED'
-}
-
 export const ARCHIVE_TOOL = 'mcp__ccd_session_mgmt__archive_session'
+export const SEND_MESSAGE_TOOL = 'mcp__ccd_session_mgmt__send_message'
 
 /** `archive_session` がこのセッション自身を畳む呼び出しか */
 export function isSelfArchive(tool: string, input: { session_id?: unknown }): boolean {
   return tool === ARCHIVE_TOOL && input.session_id === 'self'
+}
+
+/** 他のセッションを畳む `archive_session` なら、その session_id */
+export function archiveTargetOf(tool: string, input: { session_id?: unknown }): string | null {
+  return tool === ARCHIVE_TOOL && typeof input.session_id === 'string' && input.session_id !== 'self' ? input.session_id : null
+}
+
+/** archive が「まだ動いている (background task 等)」で断られた応答か。pinned / 画面に開いている等の拒否は含めない */
+export function isLiveWorkRefusal(text: string): boolean {
+  return /was not archived/i.test(text) && /live work|background (task|work)|still working/i.test(text)
+}
+
+/** 相手の pr-bridge-watch が拾って Monitor を全部止める合図 (send_message の本文に入れる) */
+export const STOP_MARKER = '[pr-bridge-watch:stop]'
+
+export const STOP_REQUEST =
+  `${STOP_MARKER} このセッションを archive するので、bridge の /watch に張った Monitor を止めてください。` +
+  'pr-bridge-watch が入っていれば自動で処理され、この文はモデルに届きません。届いた場合は TaskStop で Monitor を止めるだけで、返信は不要です。'
+
+export function isStopRequest(text: string): boolean {
+  return text.includes(STOP_MARKER)
 }
