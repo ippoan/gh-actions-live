@@ -310,11 +310,16 @@ bridge が落ちている / Monitor が拒否されたときは張らずに、�
 **Monitor は archive の前に止める。** `ref` の /watch は bridge が閉じないが、`archive_session` は生きた
 background task を持つセッションを畳まない (`still has live work`)。放っておくと見張りが archive を塞ぐので:
 
-- PR の state を 60 秒ごとに `gh pr view --json state` で見て、MERGED / CLOSED になったら `TaskStop`
-  (Auto-archive on PR close や親の `archive_session` が通るようになる)
+- **Actions の通知 (task-notification) が来るたびに全部の見張りを突合**し、local の branch
+  (`git --git-dir=<共通 dir> show-ref refs/heads/<ref>`) が消えていたら `TaskStop`。
+  PR は親セッションが作るので、子の archive → worktree-janitor で branch が消える → 親に次の通知が来た時点で止まる。
+  gh の polling や timer は持たない
 - `archive_session { session_id: "self" }` の `tool.call` を包み、先に全部の Monitor を止めてから通す
+- **他のセッションの archive が live work で断られたら**、相手へ `[pr-bridge-watch:stop]` 入りの `send_message` を送って
+  3 秒後に 1 回やり直す。受けた側の mod は `session.receive` (届かなければ `prompt.submit`) で要求を飲み込み
+  (turn を起こさない)、全部止める。子が自分で PR を作ったときの経路。pinned 等の拒否ではやり直さない
 
-どちらも task ID (Monitor の結果) が取れたときだけ。取れなければ context に「自分で TaskStop」と書く。
+task ID (Monitor の結果) が取れないとき・PR の branch が local に無いときは自動では止まらないので、context にそう書く。
 installed plugin は起動中のセッションでは読み直されない (更新は新しいセッションから効く)。
 
 導入 (Claude Code 2.1.260 以上。function hooks は既定 off):

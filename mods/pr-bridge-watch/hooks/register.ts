@@ -1,24 +1,29 @@
-import type { EngineInterface, ProcessRunInit, ProcessRunResult, Register, Timer, ToolCallResult } from 'claude-code'
+import type { EngineInterface, ProcessRunInit, ProcessRunResult, Register, ToolCallResult } from 'claude-code'
 
 import {
+  ARCHIVE_TOOL,
+  archiveTargetOf,
   headOfCommand,
-  isPrClosedState,
+  isLiveWorkRefusal,
   isPrCreateCommand,
   isSelfArchive,
+  isStopRequest,
   pullRefsOf,
+  SEND_MESSAGE_TOOL,
   statusUrlOf,
+  STOP_REQUEST,
   watchUrlOf,
 } from './pr-watch.ts'
 
 const DEFAULT_BRIDGE = 'ws://127.0.0.1:8799'
-/** PR の state を見に行く間隔。merge / close から Monitor を止めるまでの最大の遅れ */
-export const PR_POLL_MS = 60_000
+/** 停止要求を送ってから archive をやり直すまでの待ち */
+export const STOP_REQUEST_WAIT_MS = 3000
 
-type Watch = { pr: string; taskId: string | null; timer: Timer | null }
+/** gitDir: branch の実在を突合する git の共通ディレクトリ。取れなければ null (突合では止めない) */
+type Watch = { pr: string; ref: string; gitDir: string | null; taskId: string | null }
 
-/** timer から先で使う engine の口。`$` は変数に持てない (plugin validate が拒否する) ので閉包で持つ */
+/** engine の口。`$` は変数に持てない (plugin validate が拒否する) ので閉包で持つ */
 type Host = {
-  every: (ms: number, fn: () => void) => Timer
   run: (argv: readonly string[], init?: ProcessRunInit) => Promise<ProcessRunResult>
   taskStop: (taskId: string) => Promise<ToolCallResult>
   log: (text: string) => void
@@ -26,7 +31,6 @@ type Host = {
 
 function hostOf($: EngineInterface): Host {
   return {
-    every: (ms, fn) => $.clock.every(ms, fn),
     run: (argv, init) => $.process.run(argv, init),
     taskStop: taskId => $.tool.call({ tool: 'TaskStop', task_id: taskId } as Parameters<typeof $.tool.call>[0]),
     log: text => $.ui.log(text),
@@ -41,22 +45,24 @@ function hostOf($: EngineInterface): Host {
  * 繋げなかったとき (bridge が落ちている / Monitor が拒否された) は、model への context に
  * 自分で張る Monitor の引数を書いて返す — 見張りが黙って欠けるより model に拾わせる。
  *
- * `ref` の /watch は bridge が閉じない。一方 `archive_session` は生きた background task を
- * 持つセッションを畳まない ("still has live work")。放っておくと Monitor が archive を塞ぐので、
- * PR が MERGED / CLOSED になったら TaskStop し、自分自身の archive の前にも止める。
+ * `ref` の /watch は bridge が閉じず、persistent な Monitor は `archive_session` を
+ * 「still has live work」で断らせる。止めどきは次の 3 つ:
+ * - Actions の通知 (task-notification) が来るたびに全部の見張りを突合し、local の branch が
+ *   消えていたら TaskStop (PR は親が作る → 子の archive + worktree-janitor で branch が消える → 親の見張りが止まる)
+ * - このセッション自身を archive する直前に全部止める
+ * - 他のセッションの archive が live work で断られたら、相手へ停止要求を send_message して 1 回やり直す。
+ *   受けた側は session.receive / prompt.submit で要求を飲み込み (turn を起こさない)、全部止める
  */
 export const register: Register = (on, options) => {
   const bridge = typeof options.bridgeUrl === 'string' && options.bridgeUrl !== '' ? options.bridgeUrl : DEFAULT_BRIDGE
   // repo#ref → 見張り。同じセッションで同じ branch を二重に見張らない (pr-push.sh の再実行・PR の作り直し)
   const watches = new Map<string, Watch>()
-  // timer は dispatch を越えて走るので、session.start の $ の閉包に載せる (diff mod の bind と同じ)
-  let bound: Host | null = null
+  let reconciling = false
 
   const stopWatch = async (host: Host, key: string, why: string) => {
     const w = watches.get(key)
     if (w === undefined) return
     watches.delete(key)
-    w.timer?.cancel()
     if (w.taskId === null) return
     try {
       const r = await host.taskStop(w.taskId)
@@ -71,29 +77,69 @@ export const register: Register = (on, options) => {
     }
   }
 
-  const pollUntilClosed = (host: Host, key: string, pr: string): Timer => {
-    let busy = false
-    return host.every(PR_POLL_MS, () => {
-      if (busy) return
-      busy = true
-      void prStateOf(host, pr)
-        .then(state => (state !== null && isPrClosedState(state) ? stopWatch(host, key, `が ${state}`) : undefined))
-        .finally(() => {
-          busy = false
-        })
-    })
+  const stopAll = (host: Host, why: string) => Promise.all([...watches.keys()].map(key => stopWatch(host, key, why)))
+
+  /** 全部の見張りを local の branch と突合し、消えた branch の Monitor を止める */
+  const reconcile = async (host: Host) => {
+    if (reconciling) return
+    reconciling = true
+    try {
+      for (const [key, w] of [...watches]) {
+        if (w.gitDir === null) continue
+        if ((await branchExists(host, w.gitDir, w.ref)) === false) await stopWatch(host, key, `の branch ${w.ref} が local に無い`)
+      }
+    } finally {
+      reconciling = false
+    }
   }
 
-  on('session.start', ($, e, next) => {
-    bound = hostOf($)
+  // Actions の通知 (Monitor の event) が来たら突合する。通知そのものは素通し
+  on('prompt.submit', async ($, e, next) => {
+    if (isStopRequest(e.text)) {
+      await stopAll(hostOf($), 'のセッションに archive の停止要求が来た')
+      return { drop: 'pr-bridge-watch: archive の停止要求を受けて Monitor を止めた' }
+    }
+    if (e.origin.kind === 'task-notification' && watches.size > 0) void reconcile(hostOf($))
     return next(e)
   })
 
+  // 他のセッションの send_message は queue に入る前にここを通る。停止要求なら turn を起こさずに飲み込む
+  on('session.receive', async ($, e, next) => {
+    if (!isStopRequest(e.text)) return next(e)
+    await stopAll(hostOf($), 'のセッションに archive の停止要求が来た')
+    return { consumed: 'pr-bridge-watch: archive の停止要求を受けて Monitor を止めた' }
+  })
+
   on('tool.call', async ($, e, next) => {
-    if (!isSelfArchive(e.tool, e as { session_id?: unknown }) || watches.size === 0) return next(e)
-    const host = hostOf($)
-    await Promise.all([...watches.keys()].map(key => stopWatch(host, key, 'のセッションを archive する')))
-    return next(e)
+    const input = e as { session_id?: unknown; reason?: unknown }
+    if (isSelfArchive(e.tool, input)) {
+      if (watches.size > 0) await stopAll(hostOf($), 'のセッションを archive する')
+      return next(e)
+    }
+    const target = archiveTargetOf(e.tool, input)
+    if (target === null) return next(e)
+
+    const result = await next(e)
+    if (!result.isError || !isLiveWorkRefusal(result.text ?? String(result.result ?? ''))) return result
+    try {
+      // ccd の MCP tool は /plugin-types を打った環境によって型に載らないので unknown 経由
+      const sent = await $.tool.call({ tool: SEND_MESSAGE_TOOL, session_id: target, message: STOP_REQUEST } as unknown as Parameters<
+        typeof $.tool.call
+      >[0])
+      if (sent.deny !== undefined || sent.isError) return result
+      await $.clock.sleep(STOP_REQUEST_WAIT_MS, { signal: next.signal })
+      const retried = await $.tool.call({
+        tool: ARCHIVE_TOOL,
+        session_id: target,
+        ...(typeof input.reason === 'string' ? { reason: input.reason } : {}),
+      } as unknown as Parameters<typeof $.tool.call>[0])
+      const note = retried.isError
+        ? 'pr-bridge-watch: live work で断られたので相手に Monitor の停止要求を送り 1 回やり直したが、まだ畳めない'
+        : 'pr-bridge-watch: live work で断られたので相手に Monitor の停止要求を送り、やり直して畳めた'
+      return { ...retried, context: [...(retried.context ?? []), note] } as ToolCallResult
+    } catch {
+      return result
+    }
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
@@ -102,9 +148,10 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (result.deny !== undefined || result.isError) return result
 
+    const host = hostOf($)
     const notes: string[] = []
     for (const pr of pullRefsOf(result.text ?? '')) {
-      const ref = (await headRefOf(hostOf($), pr.url)) ?? headOfCommand(e.command)
+      const ref = (await headRefOf(host, pr.url)) ?? headOfCommand(e.command)
       if (ref === null) {
         notes.push(`pr-bridge-watch: ${pr.url} の branch が分からず bridge に繋いでいない`)
         continue
@@ -134,13 +181,16 @@ export const register: Register = (on, options) => {
         }
         const id = (started.result as { taskId?: unknown } | undefined)?.taskId
         const taskId = typeof id === 'string' ? id : null
-        const timer = taskId === null ? null : pollUntilClosed(bound ?? hostOf($), key, pr.url)
-        watches.set(key, { pr: pr.url, taskId, timer })
+        const gitDir = await gitDirWithBranch(host, ref)
+        watches.set(key, { pr: pr.url, ref, gitDir, taskId })
+        const stops =
+          taskId === null
+            ? '。task ID が取れず自動では止められない — 要らなくなったら TaskStop すること (残すと archive_session が畳めない)。'
+            : gitDir === null
+              ? ` (task ${taskId})。local に branch ${ref} が見つからず突合では止まらない — 要らなくなったら TaskStop すること (archive 時は自動で止める)。`
+              : ` (task ${taskId})。local の branch が消えたら次の Actions 通知で、archive のときはその前に自動で止める。`
         notes.push(
-          `pr-bridge-watch: ${pr.url} の CI を bridge の /watch (repo=${pr.repo} ref=${ref}) に Monitor で繋いだ` +
-            (taskId === null
-              ? '。task ID が取れず自動では止められない — PR が閉じたら TaskStop すること (残すと archive_session が畳めない)。'
-              : ` (task ${taskId})。PR が MERGED / CLOSED になるか、このセッションを archive するときに自動で止める。`) +
+          `pr-bridge-watch: ${pr.url} の CI を bridge の /watch (repo=${pr.repo} ref=${ref}) に Monitor で繋いだ${stops}` +
             'gh run list で polling しない。通知が来なければ拡張の watch 対象 repos (get-config) を確認',
         )
       } catch (err) {
@@ -154,19 +204,34 @@ export const register: Register = (on, options) => {
 
 /** PR の head branch。gh が無い / 失敗したら null (呼び出し側が command の --head に落ちる) */
 async function headRefOf(host: Host, url: string): Promise<string | null> {
-  return ghPrField(host, url, 'headRefName')
-}
-
-/** PR の state (OPEN / MERGED / CLOSED)。取れなければ null (次の周期でもう一度見る) */
-async function prStateOf(host: Host, url: string): Promise<string | null> {
-  return ghPrField(host, url, 'state')
-}
-
-async function ghPrField(host: Host, url: string, field: string): Promise<string | null> {
   try {
-    const r = await host.run(['gh', 'pr', 'view', url, '--json', field, '--jq', `.${field}`], { timeoutMs: 15000 })
+    const r = await host.run(['gh', 'pr', 'view', url, '--json', 'headRefName', '--jq', '.headRefName'], { timeoutMs: 15000 })
     const value = r.stdout.trim()
     return r.exitCode === 0 && value !== '' ? value : null
+  } catch {
+    return null
+  }
+}
+
+/** セッションの cwd の git 共通ディレクトリ (worktree でも main clone の .git)。そこに branch が在るときだけ返す */
+async function gitDirWithBranch(host: Host, ref: string): Promise<string | null> {
+  try {
+    const r = await host.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], { timeoutMs: 15000 })
+    const gitDir = r.stdout.trim()
+    if (r.exitCode !== 0 || gitDir === '') return null
+    return (await branchExists(host, gitDir, ref)) === true ? gitDir : null
+  } catch {
+    return null
+  }
+}
+
+/** true: 在る / false: 無い (branch か git dir ごと消えた) / null: git を走らせられなかった (止めない) */
+async function branchExists(host: Host, gitDir: string, ref: string): Promise<boolean | null> {
+  try {
+    const r = await host.run(['git', `--git-dir=${gitDir}`, 'show-ref', '--verify', '--quiet', `refs/heads/${ref}`], {
+      timeoutMs: 15000,
+    })
+    return r.exitCode === 0
   } catch {
     return null
   }
