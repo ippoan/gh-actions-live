@@ -10,6 +10,7 @@ import { createBridge } from './bridge-client.js';
 import { applySeedConfig } from './seed-config.js';
 import { createAliveWatchdog } from './alive-watchdog.js';
 import { GH, parseRow } from './run-row.js';
+import { runTime, sortReposByRecent } from './repo-order.js';
 import { replaceRepoChannels, mergeRepoChannels, dropReposNotIn, allTokens, repoForTopic } from './channel-store.js';
 
 const parser = new DOMParser();
@@ -241,9 +242,11 @@ function render() {
     byRepo.get(r.repo).push(r);
   }
 
-  const html = [...byRepo.entries()].map(([repo, runs]) => {
+  // repo の並び: 直近に run が動いた repo を上に。設定の順のままだと、動いている repo が
+  // 下の方に埋もれてスクロールしないと見えない。run の無い repo (読み込み中) は末尾
+  const html = sortReposByRecent([...byRepo.entries()]).map(([repo, runs]) => {
     runs.sort((a, b) => (RANK(cls(a.status)) - RANK(cls(b.status))) ||
-                        String(b.at || b.seenAt || '').localeCompare(String(a.at || a.seenAt || '')));
+                        runTime(b).localeCompare(runTime(a)));
     const active = runs.filter(r => cls(r.status) === 's-run').length;
     const bad    = runs.filter(r => cls(r.status) === 's-bad').length;
     return `<section>
