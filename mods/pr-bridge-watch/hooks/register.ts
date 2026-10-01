@@ -4,6 +4,8 @@ import {
   ARCHIVE_TOOL,
   archiveTargetOf,
   headOfCommand,
+  isAutoModeNoVerdict,
+  isDesktopEntrypoint,
   isLiveWorkRefusal,
   isPrCreateCommand,
   isSelfArchive,
@@ -44,6 +46,9 @@ function hostOf($: EngineInterface): Host {
  * bridge は systemd --user の常駐 1 本 (CLAUDE.md)。ここでは起動も kill もしない。
  * 繋げなかったとき (bridge が落ちている / Monitor が拒否された) は、model への context に
  * 自分で張る Monitor の引数を書いて返す — 見張りが黙って欠けるより model に拾わせる。
+ * 例外は model が従えない 2 つで、どちらも 1 行の事実だけを返す:
+ * - Claude desktop (Code タブ): app 側が PR の CI を監視するので、張ろうとしない
+ * - auto mode: hook の発した Monitor に分類器が判定を返さない。model に張らせても同じなので頼まない
  *
  * `ref` の /watch は bridge が閉じず、persistent な Monitor は `archive_session` を
  * 「still has live work」で断らせる。止めどきは次の 3 つ:
@@ -148,9 +153,16 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (result.deny !== undefined || result.isError) return result
 
+    const prs = pullRefsOf(result.text ?? '')
+    if (prs.length === 0) return result
+    if (await isDesktop($)) {
+      const note = `pr-bridge-watch: Claude desktop では app が PR の CI を監視するので bridge に Monitor を張らない (${prs.map(pr => pr.url).join(' ')})`
+      return { ...result, context: [...(result.context ?? []), note] }
+    }
+
     const host = hostOf($)
     const notes: string[] = []
-    for (const pr of pullRefsOf(result.text ?? '')) {
+    for (const pr of prs) {
       const ref = (await headRefOf(host, pr.url)) ?? headOfCommand(e.command)
       if (ref === null) {
         notes.push(`pr-bridge-watch: ${pr.url} の branch が分からず bridge に繋いでいない`)
@@ -162,6 +174,7 @@ export const register: Register = (on, options) => {
       const url = watchUrlOf(bridge, pr.repo, ref)
       const description = `${pr.repo} PR #${pr.number} CI [${ref}]`
       const manual = `Monitor({ ws: { url: "${url}" }, description: "${description}", persistent: true, timeout_ms: 3600000 })`
+      const noVerdict = `pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。${pr.url} の CI は PR の監視か gh pr checks で確認する`
 
       if (!(await isBridgeUp($, bridge))) {
         notes.push(`pr-bridge-watch: bridge (${statusUrlOf(bridge)}) に届かない。systemctl --user status gh-actions-bridge を確認し、戻ったら ${manual}`)
@@ -176,7 +189,8 @@ export const register: Register = (on, options) => {
           timeout_ms: 3600000,
         } as Parameters<typeof $.tool.call>[0])
         if (started.deny !== undefined || started.isError) {
-          notes.push(`pr-bridge-watch: Monitor を張れなかった (${started.deny ?? started.text})。自分で ${manual}`)
+          const refused = started.deny ?? started.text
+          notes.push(isAutoModeNoVerdict(refused ?? '') ? noVerdict : `pr-bridge-watch: Monitor を張れなかった (${refused})。自分で ${manual}`)
           continue
         }
         const id = (started.result as { taskId?: unknown } | undefined)?.taskId
@@ -194,7 +208,7 @@ export const register: Register = (on, options) => {
             'gh run list で polling しない。通知が来なければ拡張の watch 対象 repos (get-config) を確認',
         )
       } catch (err) {
-        notes.push(`pr-bridge-watch: Monitor の起動に失敗 (${String(err)})。自分で ${manual}`)
+        notes.push(isAutoModeNoVerdict(String(err)) ? noVerdict : `pr-bridge-watch: Monitor の起動に失敗 (${String(err)})。自分で ${manual}`)
       }
     }
     if (notes.length === 0) return result
@@ -234,6 +248,15 @@ async function branchExists(host: Host, gitDir: string, ref: string): Promise<bo
     return r.exitCode === 0
   } catch {
     return null
+  }
+}
+
+/** 読めなければ desktop ではない扱い (いままでどおり張りに行く) */
+async function isDesktop($: EngineInterface): Promise<boolean> {
+  try {
+    return isDesktopEntrypoint(await $.env.get('CLAUDE_CODE_ENTRYPOINT'))
+  } catch {
+    return false
   }
 }
 

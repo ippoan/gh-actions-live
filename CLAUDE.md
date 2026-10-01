@@ -62,6 +62,9 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   `$` は変数に代入できない (`plugin validate` が拒否。module が読まれない)。`$.clock.every(…)` 等は閉包 (`Host`) にして渡す。
   persistent な Monitor を残すと `archive_session` が「live work」で畳めない → 止めどきは
   Actions 通知ごとの local branch 突合 / self-archive の直前 / 他セッションの archive 拒否時の停止要求 (`[pr-bridge-watch:stop]`)
+  **desktop (`CLAUDE_CODE_ENTRYPOINT=claude-desktop`) では張らない / auto mode では張れない** (hook 発の Monitor に分類器が
+  判定を返さない)。どちらも「自分で Monitor を張れ」を返さない (model が従えない)。無判定の判定は文面頼み
+  (`isAutoModeNoVerdict`) → 文面が変わったらテストの `NO_VERDICT` ごと直す (#50)
 
 ## 検証
 - CI: JS 構文 / manifest 整合 / `.ps1` BOM / 参照ファイル実在 / bridge の `cargo test`。MSI ビルドは windows-latest

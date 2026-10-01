@@ -37,7 +37,23 @@ export function statusUrlOf(bridge: string): string {
   return bridge.replace(/^ws(s?):/, 'http$1:').replace(/\/+$/, '') + '/'
 }
 
-export const ARCHIVE_TOOL = 'mcp__ccd_session_mgmt__archive_session'
+/**
+ * Claude desktop (Code タブ) のセッションか。`CLAUDE_CODE_ENTRYPOINT` の値で見る。
+ * desktop は app 側が PR の CI を監視し、model が Monitor で CI を見張ることを禁じているので張らない
+ */
+export function isDesktopEntrypoint(entrypoint: string | undefined): boolean {
+  return entrypoint === 'claude-desktop'
+}
+
+/**
+ * auto mode の分類器が、hook の発した tool 呼び出しに判定を返さなかった拒否か。
+ * `$.tool.call` の戻りに種別の欄は無いので文面で見る (テストで文面を固定している)
+ */
+export function isAutoModeNoVerdict(text: string): boolean {
+  return /auto mode classifier/i.test(text) && /gave no verdict/i.test(text)
+}
+
+export const ARCHIVE_TOOL ='mcp__ccd_session_mgmt__archive_session'
 export const SEND_MESSAGE_TOOL = 'mcp__ccd_session_mgmt__send_message'
 
 /** `archive_session` がこのセッション自身を畳む呼び出しか */
