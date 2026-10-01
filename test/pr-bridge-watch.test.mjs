@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  archiveTargetOf, headOfCommand, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest,
+  archiveTargetOf, headOfCommand, isAutoModeNoVerdict, isDesktopEntrypoint, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest,
   pullRefsOf, statusUrlOf, STOP_REQUEST, watchUrlOf,
 } from '../mods/pr-bridge-watch/hooks/pr-watch.ts';
 import { register, STOP_REQUEST_WAIT_MS } from '../mods/pr-bridge-watch/hooks/register.ts';
@@ -12,6 +12,8 @@ import { register, STOP_REQUEST_WAIT_MS } from '../mods/pr-bridge-watch/hooks/re
 const ARCHIVE = 'mcp__ccd_session_mgmt__archive_session';
 const SEND = 'mcp__ccd_session_mgmt__send_message';
 const REFUSED = { isError: true, result: undefined, text: 'Session abc was not archived: it still has live work (an agent run, a Remote Control client, a queued message or a background task).' };
+// auto mode の分類器が hook 発の Monitor に返す拒否の全文 (ippoan/gh-actions-live#50 で実測した文面)
+const NO_VERDICT = 'The server-side auto mode classifier gave no verdict for Monitor: the request that produced this action did not ask for one. Issue the action again once, as-is; if it is denied again, continue with other tasks that don\'t require it and tell the user that auto mode could not evaluate it. Note: reading files, searching code, and other read-only operations do not require the classifier and can still be used.';
 
 test('PR を作る command だけ拾う', () => {
   assert.equal(isPrCreateCommand('gh pr create --title t --body b'), true);
@@ -53,9 +55,20 @@ test('/watch と状態の URL', () => {
   assert.equal(statusUrlOf('wss://b.example/'), 'https://b.example/');
 });
 
-// register を偽の engine で回す。branches は local に在る branch 名の集合 (git show-ref の代わり)
+test('auto mode の無判定と desktop の判定', () => {
+  assert.equal(isAutoModeNoVerdict(NO_VERDICT), true);
+  assert.equal(isAutoModeNoVerdict('The auto mode classifier denied Monitor: it is not safe.'), false);
+  assert.equal(isAutoModeNoVerdict('The user gave no verdict.'), false);
+  assert.equal(isAutoModeNoVerdict('not allowed'), false);
+  assert.equal(isAutoModeNoVerdict(''), false);
+  assert.equal(isDesktopEntrypoint('claude-desktop'), true);
+  assert.equal(isDesktopEntrypoint('cli'), false);
+  assert.equal(isDesktopEntrypoint(undefined), false);
+});
+
+// register を偽の engine で回す。entrypoint は CLAUDE_CODE_ENTRYPOINT の値 ('throw' なら env が読めない)。branches は local に在る branch 名の集合 (git show-ref の代わり)
 function harness({
-  options = {}, bridgeOk = true, headRef = 'feat-a', branches = ['feat-a'], gitDir = '/repo/.git',
+  options = {}, entrypoint = 'cli', bridgeOk = true, headRef = 'feat-a', branches = ['feat-a'], gitDir = '/repo/.git',
   monitor = () => ({ result: { taskId: 't1' }, text: 'started' }),
   taskStop = () => ({ result: {}, text: 'stopped' }),
   archive = () => ({ result: {}, text: 'archived' }),
@@ -66,7 +79,7 @@ function harness({
     if (event === 'tool.call' && typeof matcher === 'object') { assert.deepEqual(matcher, { tool: 'Bash' }); hooks.bash = h; }
     else hooks[event] = matcher;
   }, options);
-  const calls = { monitor: [], fetch: [], run: [], stop: [], log: [], archive: [], send: [], sleep: [] };
+  const calls = { monitor: [], fetch: [], run: [], stop: [], log: [], archive: [], send: [], sleep: [], env: [] };
   const local = new Set(branches);
   const $ = {
     process: { run: async (argv) => {
@@ -76,6 +89,7 @@ function harness({
       if (argv.includes('show-ref')) return { exitCode: local.has(argv.at(-1).replace('refs/heads/', '')) ? 0 : 1, stdout: '', stderr: '' };
       throw new Error(`unexpected ${argv}`);
     } },
+    env: { get: async (name) => { calls.env.push(name); if (entrypoint === 'throw') throw new Error('no env'); return entrypoint; } },
     http: { fetch: async (url) => { calls.fetch.push(url); if (bridgeOk === 'throw') throw new Error('refused'); return { ok: bridgeOk, status: bridgeOk ? 200 : 503, text: '' }; } },
     tool: { call: async (input) => {
       if (input.tool === 'TaskStop') { calls.stop.push(input.task_id); return taskStop(input); }
@@ -122,7 +136,7 @@ test('PR 作成以外の Bash は素通し (engine に何も頼まない)', asyn
   const { run, calls } = harness();
   const out = { result: {}, text: 'https://github.com/o/r/pull/1' };
   assert.equal(await run('gh pr view 1', out), out);
-  assert.equal(calls.monitor.length + calls.fetch.length + calls.run.length, 0);
+  assert.equal(calls.monitor.length + calls.fetch.length + calls.run.length + calls.env.length, 0);
 });
 
 test('失敗した PR 作成・deny は触らない', async () => {
@@ -151,6 +165,50 @@ test('Monitor が拒否・失敗したら context に張り方を残し、次の
   assert.match((await run('gh pr create', PR_OUT)).context[0], /起動に失敗/);
   assert.match((await run('gh pr create', PR_OUT)).context[0], /task ID が取れず自動では止められない/);
   assert.equal(calls.monitor.length, 3);
+});
+
+test('auto mode の分類器が無判定で断ったら、自分で張れとは言わず 1 行の事実だけ返す', async () => {
+  for (const monitor of [() => ({ deny: NO_VERDICT }), () => ({ isError: true, text: NO_VERDICT }), () => { throw new Error(NO_VERDICT); }]) {
+    const { run, calls } = harness({ monitor });
+    const r = await run('gh pr create --fill', PR_OUT);
+    assert.equal(calls.monitor.length, 1);
+    assert.equal(r.text, PR_OUT.text);
+    assert.deepEqual(r.context, ['pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。https://github.com/ippoan/gh-actions-live/pull/46 の CI は PR の監視か gh pr checks で確認する']);
+    assert.doesNotMatch(r.context[0], /Monitor\(\{|gave no verdict|Issue the action again|\n/);
+    assert.deepEqual(calls.stop, []);
+  }
+});
+
+test('無判定以外の拒否 (利用者が断った等) は従来どおり、自分で張る引数を返す', async () => {
+  const { run } = harness({ monitor: () => ({ isError: true, text: "The user doesn't want to proceed with this tool use." }) });
+  const r = await run('gh pr create --fill', PR_OUT);
+  assert.equal(r.context[0], 'pr-bridge-watch: Monitor を張れなかった (The user doesn\'t want to proceed with this tool use.)。自分で Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a" }, description: "ippoan/gh-actions-live PR #46 CI [feat-a]", persistent: true, timeout_ms: 3600000 })');
+});
+
+test('Claude desktop では Monitor を張ろうとせず (bridge も gh も叩かない)、1 行だけ返す', async () => {
+  const { run, calls } = harness({ entrypoint: 'claude-desktop' });
+  const r = await run('gh pr create --fill', PR_OUT);
+  assert.deepEqual(calls.env, ['CLAUDE_CODE_ENTRYPOINT']);
+  assert.equal(calls.monitor.length + calls.fetch.length + calls.run.length, 0);
+  assert.equal(r.text, PR_OUT.text);
+  assert.deepEqual(r.context, ['pr-bridge-watch: Claude desktop では app が PR の CI を監視するので bridge に Monitor を張らない (https://github.com/ippoan/gh-actions-live/pull/46)']);
+  assert.doesNotMatch(r.context[0], /Monitor\(\{|\n/);
+});
+
+test('desktop でも PR の URL が出ていなければ何も足さない', async () => {
+  const { run, calls } = harness({ entrypoint: 'claude-desktop' });
+  const out = { result: {}, text: 'no pull request' };
+  assert.equal(await run('gh pr create --fill', out), out);
+  assert.equal(calls.env.length, 0);
+});
+
+test('entrypoint が無い / 読めないときは従来どおり張る', async () => {
+  for (const entrypoint of [undefined, 'throw']) {
+    const { run, calls } = harness({ entrypoint });
+    const r = await run('gh pr create --fill', PR_OUT);
+    assert.equal(calls.monitor.length, 1);
+    assert.match(r.context[0], /Monitor で繋いだ \(task t1\)/);
+  }
 });
 
 test('gh pr view が失敗したら command の --head に落ち、それも無ければ繋がない', async () => {
