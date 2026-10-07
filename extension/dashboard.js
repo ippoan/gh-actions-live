@@ -9,7 +9,7 @@
 import { createBridge } from './bridge-client.js';
 import { applySeedConfig } from './seed-config.js';
 import { createAliveWatchdog } from './alive-watchdog.js';
-import { GH, parseRow } from './run-row.js';
+import { GH, parseRow, actionsPath } from './run-row.js';
 import { runTime, sortReposByRecent } from './repo-order.js';
 import { replaceRepoChannels, mergeRepoChannels, dropReposNotIn, allTokens, repoForTopic } from './channel-store.js';
 
@@ -77,7 +77,7 @@ function apply(repo, r) {
 
 // Actions ページ = スナップショット。全 run が畳まれずに入っている。
 async function loadRepo(repo) {
-  const doc = await fetchDoc(`/${repo}/actions`);
+  const doc = await fetchDoc(actionsPath(repo));
   const link = doc.querySelector('link[rel="shared-web-socket"]');
   if (link) { state.socketUrl = link.getAttribute('href'); state.socketNote = ''; }
   else {
@@ -89,7 +89,12 @@ async function loadRepo(repo) {
 
   const first = !state.bootstrapped.has(repo);
   const changed = [];
-  for (const row of doc.querySelectorAll('.Box-row[id^="check_suite_"]')) {
+  const rows = doc.querySelectorAll('.Box-row[id^="check_suite_"]');
+  // 行が 0 で React の殻だけが返った = GitHub がまた UI を変えた (#52)。黙って「読み込み中…」にしない
+  if (!rows.length && doc.querySelector('react-app')) {
+    log(`${repo}: Actions ページが React 版で返り run 行が 0 — ?react=false が効いていない (#52)`);
+  }
+  for (const row of rows) {
     const r = parseRow(row);
     if (!r) continue;
     const ev = apply(repo, r);

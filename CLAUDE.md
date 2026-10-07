@@ -38,6 +38,8 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   保険として `openDashboard()` は既存タブに `{target:'dashboard',type:'ping'}` を打ち、
   無応答なら `chrome.tabs.reload` で**同じウィンドウ**に読み込み直す。新規に `windows.create`
   したときも直後に `windows.update({focused, drawAttention, state:'normal'})` をもう一度打つ
+- **Actions ページは `?react=false` で取る** (`run-row.js` の `actionsPath`)。ログイン中は React 版が返り、
+  `check_suite_` の行も run の data-channel も無い → 全 repo が「0 runs / 読み込み中…」で止まる (#52、2026-10-08)
 - `dashboard.js`: alive 切断時の再接続は指数バックオフ。無条件に `boot()` を呼ぶと 5 秒周期ポーリングになる
 - **`connected:true` / `ws.send()` の成功は socket が生きている証明にならない** (#28)。half-open だと
   readyState は OPEN のまま、send も例外を投げず、20 分 boot の購読し直しも成功して見える。

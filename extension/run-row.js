@@ -4,6 +4,14 @@
 
 export const GH = 'https://github.com';
 
+// Actions ページ (run 一覧) のパス。**`?react=false` を外さない** (#52)。
+// ログイン中の GitHub は Actions ページを React 版で返すようになり、run は
+// `react-app.embeddedData` の JSON に入って `.Box-row[id^="check_suite_"]` の行も
+// run ごとの data-channel も消える (全 repo が「0 runs / 読み込み中…」のまま止まった)。
+// React 版の reactToggle が指す旧 UI を明示で取る。このリクエスト限りで、
+// ユーザーが github.com で見る Actions ページの表示は変わらない (実測 2026-10-08)
+export const actionsPath = repo => `/${repo}/actions?react=false`;
+
 // branch / タグへのリンク。行に ref を表す要素はこれが本命
 const REF_LINK = 'a[href*="/tree/"], a[href*="/releases/tag/"]';
 
