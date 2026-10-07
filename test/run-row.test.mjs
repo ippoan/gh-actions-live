@@ -1,7 +1,7 @@
 // run 行の読み取り (extension/run-row.js) の単体テスト。DOM は使わず偽の row で回す。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRow, GH } from '../extension/run-row.js';
+import { parseRow, GH, actionsPath } from '../extension/run-row.js';
 
 const el = (textContent, attrs = {}) => ({ textContent, getAttribute: name => attrs[name] ?? null });
 
@@ -78,4 +78,8 @@ test('ref になる要素が何も無い行 → 空文字', () => {
 test('run のリンクが無い / aria-label の形が違う行 → null', () => {
   assert.equal(parseRow(fakeRow()), null);
   assert.equal(parseRow(fakeRow({ select: { 'a[aria-label]': el('', { 'aria-label': 'something else' }) } })), null);
+});
+
+test('Actions ページは旧 UI (?react=false) を取る — React 版には run 行が無い (#52)', () => {
+  assert.equal(actionsPath('ippoan/gh-actions-live'), '/ippoan/gh-actions-live/actions?react=false');
 });
