@@ -185,21 +185,24 @@ test('無判定以外の拒否 (利用者が断った等) は従来どおり、�
   assert.equal(r.context[0], 'pr-bridge-watch: Monitor を張れなかった (The user doesn\'t want to proceed with this tool use.)。自分で Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a" }, description: "ippoan/gh-actions-live PR #46 CI [feat-a]", persistent: true, timeout_ms: 3600000 })');
 });
 
-test('Claude desktop では Monitor を張ろうとせず (bridge も gh も叩かない)、1 行だけ返す', async () => {
+test('Claude desktop でも bridge の /watch に Monitor を張る (app は CI の成功・merge を知らせない)', async () => {
   const { run, calls } = harness({ entrypoint: 'claude-desktop' });
   const r = await run('gh pr create --fill', PR_OUT);
-  assert.deepEqual(calls.env, ['CLAUDE_CODE_ENTRYPOINT']);
-  assert.equal(calls.monitor.length + calls.fetch.length + calls.run.length, 0);
-  assert.equal(r.text, PR_OUT.text);
-  assert.deepEqual(r.context, ['pr-bridge-watch: Claude desktop では app が PR の CI を監視するので bridge に Monitor を張らない (https://github.com/ippoan/gh-actions-live/pull/46)']);
-  assert.doesNotMatch(r.context[0], /Monitor\(\{|\n/);
+  assert.equal(calls.monitor.length, 1);
+  assert.deepEqual(calls.monitor[0].ws, { url: 'ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a' });
+  assert.equal(calls.monitor[0].persistent, undefined);
+  assert.equal(calls.monitor[0].timeout_ms, 1800000);
+  assert.match(r.context[0], /Monitor で繋いだ \(task t1\)/);
 });
 
-test('desktop でも PR の URL が出ていなければ何も足さない', async () => {
-  const { run, calls } = harness({ entrypoint: 'claude-desktop' });
-  const out = { result: {}, text: 'no pull request' };
-  assert.equal(await run('gh pr create --fill', out), out);
-  assert.equal(calls.env.length, 0);
+test('desktop で auto mode の分類器が無判定で断ったら、引数つきで自分で張れと返す', async () => {
+  for (const monitor of [() => ({ deny: NO_VERDICT }), () => ({ isError: true, text: NO_VERDICT }), () => { throw new Error(NO_VERDICT); }]) {
+    const { run, calls } = harness({ entrypoint: 'claude-desktop', monitor });
+    const r = await run('gh pr create --fill', PR_OUT);
+    assert.equal(calls.monitor.length, 1);
+    assert.deepEqual(r.context, ['pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。https://github.com/ippoan/gh-actions-live/pull/46 の CI を見届けるため自分で Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a" }, description: "ippoan/gh-actions-live PR #46 CI [feat-a]", timeout_ms: 1800000 })']);
+    assert.doesNotMatch(r.context[0], /gave no verdict|Issue the action again|\n/);
+  }
 });
 
 test('entrypoint が無い / 読めないときは従来どおり張る', async () => {
@@ -209,6 +212,12 @@ test('entrypoint が無い / 読めないときは従来どおり張る', async 
     assert.equal(calls.monitor.length, 1);
     assert.match(r.context[0], /Monitor で繋いだ \(task t1\)/);
   }
+});
+
+test('env が読めなければ無判定は CLI 扱い (自分で張れとは言わない)', async () => {
+  const { run } = harness({ entrypoint: 'throw', monitor: () => ({ deny: NO_VERDICT }) });
+  const r = await run('gh pr create --fill', PR_OUT);
+  assert.match(r.context[0], /gh pr checks で確認する$/);
 });
 
 test('gh pr view が失敗したら command の --head に落ち、それも無ければ繋がない', async () => {

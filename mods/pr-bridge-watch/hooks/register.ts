@@ -46,9 +46,9 @@ function hostOf($: EngineInterface): Host {
  * bridge は systemd --user の常駐 1 本 (CLAUDE.md)。ここでは起動も kill もしない。
  * 繋げなかったとき (bridge が落ちている / Monitor が拒否された) は、model への context に
  * 自分で張る Monitor の引数を書いて返す — 見張りが黙って欠けるより model に拾わせる。
- * 例外は model が従えない 2 つで、どちらも 1 行の事実だけを返す:
- * - Claude desktop (Code タブ): app 側が PR の CI を監視するので、張ろうとしない
- * - auto mode: hook の発した Monitor に分類器が判定を返さない。model に張らせても同じなので頼まない
+ * auto mode では hook の発した Monitor に分類器が判定を返さない。CLI では 1 行の事実だけ返し、
+ * Claude desktop (Code タブ) では引数つきで model に張らせる — desktop の app が起こしてくれるのは
+ * Auto-fix オンの PR の失敗だけで、CI の成功・merge は届かない。model が張った ws の Monitor は通る
  *
  * `ref` の /watch は bridge が閉じず、persistent な Monitor は `archive_session` を
  * 「still has live work」で断らせる。止めどきは次の 3 つ:
@@ -155,12 +155,12 @@ export const register: Register = (on, options) => {
 
     const prs = pullRefsOf(result.text ?? '')
     if (prs.length === 0) return result
-    if (await isDesktop($)) {
-      const note = `pr-bridge-watch: Claude desktop では app が PR の CI を監視するので bridge に Monitor を張らない (${prs.map(pr => pr.url).join(' ')})`
-      return { ...result, context: [...(result.context ?? []), note] }
-    }
 
     const host = hostOf($)
+    // desktop の Monitor には persistent が無く timeout_ms は 30 分まで (2026-10-17 実測)。CLI の引数のままだと schema で弾かれる
+    const desktop = await isDesktop($)
+    const lifetime = desktop ? { timeout_ms: 1800000 } : { persistent: true, timeout_ms: 3600000 }
+    const lifetimeArgs = desktop ? 'timeout_ms: 1800000' : 'persistent: true, timeout_ms: 3600000'
     const notes: string[] = []
     for (const pr of prs) {
       const ref = (await headRefOf(host, pr.url)) ?? headOfCommand(e.command)
@@ -173,8 +173,12 @@ export const register: Register = (on, options) => {
 
       const url = watchUrlOf(bridge, pr.repo, ref)
       const description = `${pr.repo} PR #${pr.number} CI [${ref}]`
-      const manual = `Monitor({ ws: { url: "${url}" }, description: "${description}", persistent: true, timeout_ms: 3600000 })`
-      const noVerdict = `pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。${pr.url} の CI は PR の監視か gh pr checks で確認する`
+      const manual = `Monitor({ ws: { url: "${url}" }, description: "${description}", ${lifetimeArgs} })`
+      // desktop の model は自分で張った ws の Monitor なら通る (2026-10-17 実測)。app は CI の成功・merge を知らせないので張らせる
+      const noVerdict = () =>
+        desktop
+          ? `pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。${pr.url} の CI を見届けるため自分で ${manual}`
+          : `pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。${pr.url} の CI は PR の監視か gh pr checks で確認する`
 
       if (!(await isBridgeUp($, bridge))) {
         notes.push(`pr-bridge-watch: bridge (${statusUrlOf(bridge)}) に届かない。systemctl --user status gh-actions-bridge を確認し、戻ったら ${manual}`)
@@ -185,12 +189,11 @@ export const register: Register = (on, options) => {
           tool: 'Monitor',
           description,
           ws: { url },
-          persistent: true,
-          timeout_ms: 3600000,
+          ...lifetime,
         } as Parameters<typeof $.tool.call>[0])
         if (started.deny !== undefined || started.isError) {
           const refused = started.deny ?? started.text
-          notes.push(isAutoModeNoVerdict(refused ?? '') ? noVerdict : `pr-bridge-watch: Monitor を張れなかった (${refused})。自分で ${manual}`)
+          notes.push(isAutoModeNoVerdict(refused ?? '') ? noVerdict() : `pr-bridge-watch: Monitor を張れなかった (${refused})。自分で ${manual}`)
           continue
         }
         const id = (started.result as { taskId?: unknown } | undefined)?.taskId
@@ -208,7 +211,7 @@ export const register: Register = (on, options) => {
             'gh run list で polling しない。通知が来なければ拡張の watch 対象 repos (get-config) を確認',
         )
       } catch (err) {
-        notes.push(isAutoModeNoVerdict(String(err)) ? noVerdict : `pr-bridge-watch: Monitor の起動に失敗 (${String(err)})。自分で ${manual}`)
+        notes.push(isAutoModeNoVerdict(String(err)) ? noVerdict() : `pr-bridge-watch: Monitor の起動に失敗 (${String(err)})。自分で ${manual}`)
       }
     }
     if (notes.length === 0) return result
