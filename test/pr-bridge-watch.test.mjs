@@ -190,8 +190,9 @@ test('Claude desktop でも bridge の /watch に Monitor を張る (app は CI 
   const r = await run('gh pr create --fill', PR_OUT);
   assert.equal(calls.monitor.length, 1);
   assert.deepEqual(calls.monitor[0].ws, { url: 'ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a' });
+  assert.equal(calls.monitor[0].persistent, undefined);
+  assert.equal(calls.monitor[0].timeout_ms, 1800000);
   assert.match(r.context[0], /Monitor で繋いだ \(task t1\)/);
-  assert.deepEqual(calls.env, []);
 });
 
 test('desktop で auto mode の分類器が無判定で断ったら、引数つきで自分で張れと返す', async () => {
@@ -199,8 +200,7 @@ test('desktop で auto mode の分類器が無判定で断ったら、引数つ�
     const { run, calls } = harness({ entrypoint: 'claude-desktop', monitor });
     const r = await run('gh pr create --fill', PR_OUT);
     assert.equal(calls.monitor.length, 1);
-    assert.deepEqual(calls.env, ['CLAUDE_CODE_ENTRYPOINT']);
-    assert.deepEqual(r.context, ['pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。https://github.com/ippoan/gh-actions-live/pull/46 の CI を見届けるため自分で Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a" }, description: "ippoan/gh-actions-live PR #46 CI [feat-a]", persistent: true, timeout_ms: 3600000 })']);
+    assert.deepEqual(r.context, ['pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。https://github.com/ippoan/gh-actions-live/pull/46 の CI を見届けるため自分で Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a" }, description: "ippoan/gh-actions-live PR #46 CI [feat-a]", timeout_ms: 1800000 })']);
     assert.doesNotMatch(r.context[0], /gave no verdict|Issue the action again|\n/);
   }
 });

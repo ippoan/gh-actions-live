@@ -309,6 +309,8 @@ bridge が落ちている / Monitor が拒否されたときは張らずに、�
 
 **Claude desktop (Code タブ) でも張る。** desktop の app が起こしてくれるのは Auto-fix をオンにした PR の失敗
 (と conflict・レビューコメント) だけで、CI が通った・merge された、は届かない (Auto-fix は既定でオフ)。
+desktop の Monitor には `persistent` が無く `timeout_ms` は 30 分まで (schema で弾かれる) なので、desktop では
+`timeout_ms: 1800000` だけで張る (切れたら通知が来るので張り直す)。
 
 **auto mode では hook から張れない。** hook の発した Monitor に分類器が判定を返さない (`gave no verdict`、#50)。
 そのときの context は環境で分ける (どちらも拒否の全文は載せない):

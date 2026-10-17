@@ -67,7 +67,7 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   **desktop (`CLAUDE_CODE_ENTRYPOINT=claude-desktop`) でも張る** — app が知らせるのは Auto-fix オンの PR の失敗だけで、
   CI の成功・merge は届かない (#51 の「app が監視するから張らない」は誤り)。**auto mode では hook から張れない**
   (hook 発の Monitor に分類器が判定を返さない) → desktop なら引数つきで「自分で張れ」を返す (model の張った ws Monitor は通る)、
-  それ以外は 1 行の事実だけ。無判定の判定は文面頼み (`isAutoModeNoVerdict`) → 文面が変わったらテストの `NO_VERDICT` ごと直す (#50)
+  それ以外は 1 行の事実だけ。desktop の Monitor は `persistent` 無し・`timeout_ms` 30 分上限 (CLI の引数だと schema で弾かれる)。無判定の判定は文面頼み (`isAutoModeNoVerdict`) → 文面が変わったらテストの `NO_VERDICT` ごと直す (#50)
 
 ## 検証
 - CI: JS 構文 / manifest 整合 / `.ps1` BOM / 参照ファイル実在 / bridge の `cargo test`。MSI ビルドは windows-latest
