@@ -39,7 +39,8 @@ export function statusUrlOf(bridge: string): string {
 
 /**
  * Claude desktop (Code タブ) のセッションか。`CLAUDE_CODE_ENTRYPOINT` の値で見る。
- * desktop は app 側が PR の CI を監視し、model が Monitor で CI を見張ることを禁じているので張らない
+ * desktop の app は Auto-fix オンの PR の失敗しか知らせない (成功・merge は届かない) ので desktop でも bridge に繋ぐ。
+ * auto mode で hook の Monitor が無判定になったとき、desktop なら引数つきで model に張らせる
  */
 export function isDesktopEntrypoint(entrypoint: string | undefined): boolean {
   return entrypoint === 'claude-desktop'

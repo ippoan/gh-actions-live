@@ -307,12 +307,15 @@ Bash の `tool.call` を包み、`gh pr create` / `pr-push.sh` が成功して P
 bridge が落ちている / Monitor が拒否されたときは張らずに、自分で張る `Monitor(...)` の引数を context に書く
 (見張りが黙って欠けるより model に拾わせる)。同じセッションで同じ branch は二度張らない。
 
-張らない環境が 2 つある。どちらも「自分で張れ」は返さず、1 行の事実だけを context に足す:
+**Claude desktop (Code タブ) でも張る。** desktop の app が起こしてくれるのは Auto-fix をオンにした PR の失敗
+(と conflict・レビューコメント) だけで、CI が通った・merge された、は届かない (Auto-fix は既定でオフ)。
 
-- **Claude desktop (Code タブ) では張ろうとしない** (`CLAUDE_CODE_ENTRYPOINT` が `claude-desktop`)。app 側が PR の CI を
-  監視していて、model が Monitor で CI を見張ることを禁じているため。bridge も `gh pr view` も叩かない
-- **auto mode では張れない。** hook の発した Monitor に分類器が判定を返さない (`gave no verdict`)。
-  model に張らせる指示は出さず、「CI は PR の監視か `gh pr checks` で確認する」とだけ返す
+**auto mode では hook から張れない。** hook の発した Monitor に分類器が判定を返さない (`gave no verdict`、#50)。
+そのときの context は環境で分ける (どちらも拒否の全文は載せない):
+
+- desktop (`CLAUDE_CODE_ENTRYPOINT` が `claude-desktop`): 「CI を見張るため自分で `Monitor({ ws: … })`」と引数つきで返す。
+  model が自分で張った ws の Monitor は通る (2026-10-17 実測)
+- それ以外: 「CI は PR の監視か `gh pr checks` で確認する」と 1 行の事実だけ返す
 
 **Monitor は archive の前に止める。** `ref` の /watch は bridge が閉じないが、`archive_session` は生きた
 background task を持つセッションを畳まない (`still has live work`)。放っておくと見張りが archive を塞ぐので:
