@@ -80,6 +80,14 @@ test('run のリンクが無い / aria-label の形が違う行 → null', () =>
   assert.equal(parseRow(fakeRow({ select: { 'a[aria-label]': el('', { 'aria-label': 'something else' }) } })), null);
 });
 
+test('ストップウォッチ隣の span → duration (空白は詰める)、無い行は空文字', () => {
+  const row = fakeRow({
+    select: { 'a[aria-label]': RUN_LINK, '.octicon-stopwatch + span': el('\n        1m   5s\n      ') }
+  });
+  assert.equal(parseRow(row).duration, '1m 5s');
+  assert.equal(parseRow(fakeRow({ select: { 'a[aria-label]': RUN_LINK } })).duration, '');
+});
+
 test('Actions ページは旧 UI (?react=false) を取る — React 版には run 行が無い (#52)', () => {
   assert.equal(actionsPath('ippoan/gh-actions-live'), '/ippoan/gh-actions-live/actions?react=false');
 });

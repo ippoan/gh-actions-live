@@ -15,6 +15,10 @@ export const actionsPath = repo => `/${repo}/actions?react=false`;
 // branch / タグへのリンク。行に ref を表す要素はこれが本命
 const REF_LINK = 'a[href*="/tree/"], a[href*="/releases/tag/"]';
 
+// 実行時間 (`24s` / `1m 5s`)。行のストップウォッチ (aria-label="Run duration") の隣の span。
+// 狭い幅用と広い幅用で同じものが 2 つあるので最初の 1 つで足りる
+const DURATION = '.octicon-stopwatch + span';
+
 // 行 1 つ。aria-label に status / run番号 / workflow名 / title が全部入っている。
 export function parseRow(row) {
   const a = row.querySelector('a[aria-label]');
@@ -37,6 +41,7 @@ export function parseRow(row) {
     status: m[1].trim(), run: m[2], workflow: m[3].trim(), title: m[4].trim(),
     ref: refEl ? refEl.textContent.trim().slice(0, 40) : '',
     by: by ? by[1] : '',
-    at: row.querySelector('relative-time')?.getAttribute('datetime') || null
+    at: row.querySelector('relative-time')?.getAttribute('datetime') || null,
+    duration: (row.querySelector(DURATION)?.textContent || '').replace(/\s+/g, ' ').trim()
   };
 }
