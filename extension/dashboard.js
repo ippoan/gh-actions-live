@@ -221,11 +221,22 @@ function ago(t) {
   return `${d/86400|0}日前`;
 }
 
+// 実行時間。終わった run は GitHub の表示 (`1m 5s`) をそのまま、実行中は開始 (`at`) からの経過を
+// 5 秒ごとの render で数え上げる (行の表示は取得した瞬間の値で止まっているため)
+function elapsed(t) {
+  const d = Math.max(0, (Date.now() - new Date(t)) / 1000 | 0);
+  const h = d / 3600 | 0, m = d % 3600 / 60 | 0, s = d % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
+}
+const duration = r =>
+  cls(r.status) === 's-run' ? (r.at ? elapsed(r.at) : '') : (r.duration || '');
+
 function card(r) {
+  const dur = duration(r);
   return `<a class="card ${cls(r.status)}" href="${esc(r.href)}" target="_blank" rel="noopener">
     <span class="dot"></span>
     <div class="ttl" title="${esc(r.title)}">${esc(r.title) || '<span style="opacity:.6">(no title)</span>'}</div>
-    <div class="when">${esc(r.status)}<br>${ago(r.at)}</div>
+    <div class="when">${esc(r.status)}<br>${dur ? `⏱ ${esc(dur)} · ` : ''}${ago(r.at)}</div>
     <div class="meta">${esc(r.workflow)} <b>#${esc(r.run)}</b>${
       r.ref ? `<span class="tag">${esc(r.ref)}</span>` : ''}${r.by ? ` · ${esc(r.by)}` : ''}</div>
   </a>`;
@@ -270,7 +281,7 @@ function render() {
 
 const snapshot = () => [...state.runs.values()].map(r => ({
   repo: r.repo, workflow: r.workflow, run: r.run, status: r.status, ref: r.ref,
-  title: r.title, href: r.href, runId: r.runId, by: r.by, at: r.at
+  title: r.title, href: r.href, runId: r.runId, by: r.by, at: r.at, duration: r.duration
 }));
 
 const bridge = createBridge({
