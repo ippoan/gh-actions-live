@@ -9,7 +9,7 @@
 import { createBridge } from './bridge-client.js';
 import { applySeedConfig } from './seed-config.js';
 import { createAliveWatchdog } from './alive-watchdog.js';
-import { GH, parseRow, actionsPath } from './run-row.js';
+import { GH, parseRow, actionsPath, decodeChannel, runsFromEmbedded } from './run-row.js';
 import { runTime, sortReposByRecent } from './repo-order.js';
 import { replaceRepoChannels, mergeRepoChannels, dropReposNotIn, allTokens, repoForTopic } from './channel-store.js';
 
@@ -34,7 +34,6 @@ const state = {
 };
 
 const log = (...a) => { console.log('[live]', ...a); chrome.runtime.sendMessage({ target:'background', type:'log', args:a }).catch(()=>{}); };
-const decodeChannel = v => { try { return JSON.parse(atob(v.split('--')[0])).c; } catch { return null; } };
 
 /* ---------------- GitHub 読み取り ---------------- */
 // parseRow (run 行 1 つの読み取り) は ./run-row.js へ切り出し済み (Refs ippoan/alc-app-s3#135)
@@ -53,8 +52,8 @@ async function fetchDoc(path, { partial = false } = {}) {
 
 // mode: 'replace' (Actions ページのフル読み込み。その repo の分を作り直す) |
 //       'merge' (1 run だけの partial 読み込み。一覧全体を表さないので足すだけ)
-function ingestChannels(doc, repo, mode = 'replace') {
-  const entries = [];
+function ingestChannels(doc, repo, mode = 'replace', extra = []) {
+  const entries = [...extra];
   for (const el of doc.querySelectorAll('[data-channel]')) {
     const v = el.getAttribute('data-channel');
     const topic = decodeChannel(v);
@@ -85,18 +84,24 @@ async function loadRepo(repo) {
     log(`${repo}: link[rel=shared-web-socket] が無い — 未ログインか、断片だけが返っている`);
   }
 
-  ingestChannels(doc, repo);
+  // React 版 (今の GitHub) は run も channel も embeddedData の JSON にある。旧形式の行が来たらそちらも読む
+  const script = doc.querySelector('script[data-target="react-app.embeddedData"]');
+  let embedded = null;
+  if (script) {
+    try { embedded = runsFromEmbedded(JSON.parse(script.textContent)); }
+    catch (e) { log(`${repo}: embeddedData を読めない`, String(e)); }
+  }
+  ingestChannels(doc, repo, 'replace', embedded?.channels || []);
 
   const first = !state.bootstrapped.has(repo);
   const changed = [];
-  const rows = doc.querySelectorAll('.Box-row[id^="check_suite_"]');
-  // 行が 0 で React の殻だけが返った = GitHub がまた UI を変えた (#52)。黙って「読み込み中…」にしない
-  if (!rows.length && doc.querySelector('react-app')) {
-    log(`${repo}: Actions ページが React 版で返り run 行が 0 — ?react=false が効いていない (#52)`);
+  const runs = [...doc.querySelectorAll('.Box-row[id^="check_suite_"]')].map(parseRow).filter(Boolean);
+  if (embedded) runs.push(...embedded.runs);
+  // run が 0 で JSON も読めない = GitHub がまた形を変えた (#52)。黙って「読み込み中…」にしない
+  if (!runs.length && !embedded) {
+    log(`${repo}: Actions ページから run を読めない — run 行も embeddedData の workflowRuns も無い (#52)`);
   }
-  for (const row of rows) {
-    const r = parseRow(row);
-    if (!r) continue;
+  for (const r of runs) {
     const ev = apply(repo, r);
     if (ev && !first) changed.push(ev);
   }
