@@ -1,7 +1,7 @@
 // run 行の読み取り (extension/run-row.js) の単体テスト。DOM は使わず偽の row で回す。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRow, GH, actionsPath } from '../extension/run-row.js';
+import { parseRow, GH, actionsPath, statusText, parseEmbeddedRun, runsFromEmbedded } from '../extension/run-row.js';
 
 const el = (textContent, attrs = {}) => ({ textContent, getAttribute: name => attrs[name] ?? null });
 
@@ -88,6 +88,63 @@ test('ストップウォッチ隣の span → duration (空白は詰める)、�
   assert.equal(parseRow(fakeRow({ select: { 'a[aria-label]': RUN_LINK } })).duration, '');
 });
 
-test('Actions ページは旧 UI (?react=false) を取る — React 版には run 行が無い (#52)', () => {
-  assert.equal(actionsPath('ippoan/gh-actions-live'), '/ippoan/gh-actions-live/actions?react=false');
+test('Actions ページは素の /actions — ?react=false は GitHub に無視される (#52、2026-10-21)', () => {
+  assert.equal(actionsPath('ippoan/gh-actions-live'), '/ippoan/gh-actions-live/actions');
+});
+
+// 署名済み data-channel の形 (`<base64 JSON>--<署名>`)
+const ch = c => Buffer.from(JSON.stringify({ c, t: 1792554104 })).toString('base64') + '--sig';
+
+// React 版 Actions ページの embeddedData にある run 1 件 (2026-10-21 の実物から必要な欄だけ)
+const RUN = {
+  name: 'CI', runNumber: 93, id: '39361283062', workflowName: 'CI',
+  runUrl: 'https://github.com/ippoan/gh-actions-live/actions/runs/39361283062',
+  title: 'feat(extension): ダッシュボードのカードに run の実行時間を出す (#55)',
+  state: { status: 'WORKFLOW_RUN_STATUS_COMPLETED', conclusion: 'WORKFLOW_RUN_CONCLUSION_SUCCESS' },
+  createdAt: { timestamp: '2026-10-20T02:52:42Z', isCurrentYear: true },
+  branch: { name: 'refs/heads/main', url: '/ippoan/gh-actions-live/tree/refs/heads/main', title: 'main' },
+  timing: { kind: 'WORKFLOW_RUN_TIMING_KIND_DURATION', text: '27s' },
+  aliveChannel: ch('check_suites:106662649040'),
+  description: { action: 'pushed', actorName: 'ippoan-ci-bot[bot]', actorType: 'WORKFLOW_RUN_ACTOR_TYPE_BOT' }
+};
+
+test('embeddedData の run → parseRow と同じ形', () => {
+  assert.deepEqual(parseEmbeddedRun(RUN), {
+    checkSuiteId: '106662649040', runId: '39361283062',
+    href: 'https://github.com/ippoan/gh-actions-live/actions/runs/39361283062',
+    status: 'completed successfully', run: '93', workflow: 'CI',
+    title: 'feat(extension): ダッシュボードのカードに run の実行時間を出す (#55)',
+    ref: 'main', by: 'ippoan-ci-bot', at: '2026-10-20T02:52:42Z', duration: '27s'
+  });
+});
+
+test('実行中・branch 無しの run → duration と ref は空', () => {
+  const r = parseEmbeddedRun({ ...RUN, branch: undefined,
+    state: { status: 'WORKFLOW_RUN_STATUS_IN_PROGRESS' },
+    timing: { kind: 'WORKFLOW_RUN_TIMING_KIND_IN_PROGRESS', text: 'In progress' } });
+  assert.equal(r.status, 'currently running');
+  assert.equal(r.duration, '');
+  assert.equal(r.ref, '');
+});
+
+test('state → 旧 UI の aria-label と同じ文言 (bridge の正規表現が見る語彙)', () => {
+  const s = (status, conclusion) => statusText({ status: 'WORKFLOW_RUN_STATUS_' + status,
+    conclusion: conclusion && 'WORKFLOW_RUN_CONCLUSION_' + conclusion });
+  assert.equal(s('COMPLETED', 'SUCCESS'), 'completed successfully');
+  assert.equal(s('COMPLETED', 'FAILURE'), 'failed');
+  assert.equal(s('COMPLETED', 'SKIPPED'), 'skipped');
+  assert.equal(s('COMPLETED', 'CANCELLED'), 'cancelled');
+  assert.equal(s('COMPLETED', 'TIMED_OUT'), 'timed out');
+  assert.equal(s('COMPLETED', 'ACTION_REQUIRED'), 'action required');
+  assert.equal(s('IN_PROGRESS'), 'currently running');
+  assert.equal(s('QUEUED'), 'queued');
+  assert.equal(s('WAITING'), 'waiting');
+});
+
+test('embeddedData 全体 → run と購読 channel (repo の workflow_runs と run の check_suites)', () => {
+  const route = ch('workflow_runs:1342560199');
+  const got = runsFromEmbedded({ payload: { allWorkflowRunsRoute: { aliveChannel: route, workflowRuns: [RUN, { ...RUN, aliveChannel: 'broken' }] } } });
+  assert.equal(got.runs.length, 1);
+  assert.deepEqual(got.channels, [['workflow_runs:1342560199', route], ['check_suites:106662649040', RUN.aliveChannel]]);
+  assert.equal(runsFromEmbedded({ payload: {} }), null);
 });
