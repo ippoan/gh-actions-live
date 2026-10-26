@@ -6,7 +6,7 @@
 // 短命だが、WebSocket の往来 (リレーの 20 秒 ping と pong) が続く限り生き続ける。
 // 念のため chrome.alarms (最小 30 秒) でも再接続を蹴る。
 import { createBridge } from './bridge-client.js';
-import { applySeedConfig } from './seed-config.js';
+import { applySeedConfig, configPatch } from './seed-config.js';
 
 const DASH = 'dashboard.html';
 
@@ -344,19 +344,17 @@ async function handleCommand(msg, via = 'external') {
     case 'update':         return await runUpdate();
     case 'native-ping':    return await nativeCall('ping');
     case 'set-config': {
-      const patch = {};
-      if (Array.isArray(msg.repos)) patch.repos = msg.repos.map(String).filter(Boolean);
-      if (typeof msg.notify === 'boolean') patch.notify = msg.notify;
-      if (typeof msg.bridgeUrl === 'string') patch.bridgeUrl = msg.bridgeUrl.trim();
-      // access-login で開いてよいホスト (完全一致 / deny-by-default)。[] を入れれば無効化できる
-      if (Array.isArray(msg.accessLoginHosts)) {
-        patch.accessLoginHosts = msg.accessLoginHosts.map(h => String(h).trim().toLowerCase()).filter(Boolean);
-      }
+      // 形の検査は repo / config.json の取り込みと共通 (configPatch)。
+      // accessLoginHosts は完全一致 / deny-by-default。[] を入れれば無効化できる
+      const patch = configPatch(msg);
       await chrome.storage.local.set(patch);
+      // configRepo を変えたら次の取り込みを待たずに読みに行く
+      if (patch.configRepo) await applySeedConfig();
       return { ok: true, applied: patch };
     }
     case 'get-config':
-      return { ok: true, ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl', 'accessLoginHosts'])), version: chrome.runtime.getManifest().version };
+      // remoteConfigStatus = repo の設定を最後に読みに行った結果 (ok / error / hash / at)
+      return { ok: true, ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl', 'accessLoginHosts', 'configRepo', 'remoteConfigStatus'])), version: chrome.runtime.getManifest().version };
     default: return { ok: false, error: 'unknown command: ' + msg.command };
   }
 }

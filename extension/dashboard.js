@@ -7,7 +7,7 @@
 // ページが持つ run は畳まれていないので、同一 repo で並列に走る run が全部並ぶ。
 
 import { createBridge } from './bridge-client.js';
-import { applySeedConfig } from './seed-config.js';
+import { applySeedConfig, configPatch } from './seed-config.js';
 import { createAliveWatchdog } from './alive-watchdog.js';
 import { GH, parseRow, actionsPath, decodeChannel, runsFromEmbedded } from './run-row.js';
 import { runTime, sortReposByRecent } from './repo-order.js';
@@ -279,7 +279,9 @@ function render() {
     </section>`;
   }).join('');
 
-  $('grid').innerHTML = html || '<div class="empty">設定で repo を追加してください。</div>';
+  const rc = state.remoteConfig;
+  $('grid').innerHTML = html || `<div class="empty">設定で repo を追加してください。${
+    rc && !rc.ok ? `<br>共通設定 (${esc(rc.repo)}) を取れていません: ${esc(rc.error)} — github.com にログインしているか確認` : ''}</div>`;
 }
 
 /* ---------------- Linux 側リレー ---------------- */
@@ -310,10 +312,7 @@ const bridge = createBridge({
       case 'refresh':  boot(); checkLatest(); break;
       case 'check-update': checkLatest(); break;
       case 'set-config': {
-        const patch = {};
-        if (Array.isArray(msg.repos)) patch.repos = msg.repos.map(String).filter(Boolean);
-        if (typeof msg.notify === 'boolean') patch.notify = msg.notify;
-        if (typeof msg.bridgeUrl === 'string') patch.bridgeUrl = msg.bridgeUrl.trim();
+        const patch = configPatch(msg);
         chrome.storage.local.set(patch).then(() => { bridge.send({ type: 'ack', command: 'set-config', applied: patch }); boot(); });
         break;
       }
@@ -382,9 +381,10 @@ async function checkLatest() {
 /* ---------------- 起動 ---------------- */
 
 async function boot() {
-  await applySeedConfig(log);   // インストーラーが書いた config.json があれば取り込む
-  const { repos = [] } = await chrome.storage.local.get('repos');
+  await applySeedConfig(log);   // インストーラーの config.json と repo の config.json を取り込む (変わったときだけ)
+  const { repos = [], remoteConfigStatus } = await chrome.storage.local.get(['repos', 'remoteConfigStatus']);
   state.repos = repos;
+  state.remoteConfig = remoteConfigStatus;   // repo 未設定の画面で「共通設定が取れなかった理由」を出す
   dropReposNotIn(state.tokenByTopicByRepo, repos);   // set-config で repo を減らしたとき、外れた分を捨てる
   // repo が空でもリレーには繋ぐ (Linux 側から set-config できるように)。
   // 以前はここで return していて、repo 未設定だと bridge が「—」のまま動かなかった。
