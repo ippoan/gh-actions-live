@@ -13,6 +13,23 @@ async function loadSettings() {
   dirty = false;
 }
 
+// 全 PC 共通の設定 (GitHub の private repo の config.json) を最後に読みに行った結果。
+// 中身を変えるときはその repo を直す (ここで保存した値は、repo 側が次に変わると上書きされる)
+async function loadRemote() {
+  const { configRepo, remoteConfigStatus: st } = await chrome.storage.local.get(['configRepo', 'remoteConfigStatus']);
+  const repo = st?.repo || configRepo || 'ippoan/gh-actions-live-config';
+  const el = $('remote');
+  el.textContent = '共通設定: ';
+  const a = document.createElement('a');
+  a.href = `https://github.com/${repo}/blob/HEAD/config.json`;
+  a.target = '_blank';
+  a.textContent = repo;
+  el.append(a, st
+    ? (st.ok ? ` — 取得 OK (${st.hash}, ${new Date(st.at).toLocaleString()})`
+             : ` — 取得失敗: ${st.error} (${new Date(st.at).toLocaleString()})。github.com にログインしているか確認`)
+    : ' — まだ読みに行っていない');
+}
+
 async function loadSamples() {
   const { rawSamples } = await chrome.storage.local.get('rawSamples');
   $('raw').textContent = (rawSamples || []).slice(0, 5).join('\n\n') || '(まだ無し)';
@@ -38,6 +55,7 @@ $('save').addEventListener('click', async () => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.rawSamples) loadSamples();
+  if (changes.remoteConfigStatus || changes.configRepo) loadRemote();
   if ((changes.repos || changes.notify || changes.bridgeUrl) && !dirty) loadSettings();
 });
 
@@ -46,5 +64,6 @@ document.querySelectorAll('button[data-mode]').forEach(b =>
     chrome.runtime.sendMessage({ target: 'background', type: 'open-dashboard', mode: b.dataset.mode })));
 
 loadSettings();
+loadRemote();
 loadSamples();
 setInterval(loadSamples, 5000);   // サンプル欄だけの保険。入力欄には触らない

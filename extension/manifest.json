@@ -16,6 +16,7 @@
     "*://alive.github.com/*",
     "https://github.com/*",
     "https://objects.githubusercontent.com/*",
+    "https://raw.githubusercontent.com/*",
     "https://release-assets.githubusercontent.com/*"
   ],
   "background": {

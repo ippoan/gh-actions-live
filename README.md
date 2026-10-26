@@ -103,12 +103,25 @@ MSI は 1 つで、**既定は perUser (admin 不要)**。管理端末向けの�
    property は全部任意。渡した値は `extension\config.json` に書かれ、拡張が起動時に取り込む。
    **設定画面での手入力は不要**。拡張を入れ直して `chrome.storage` が消えても config.json から戻る。
    あとから変えたいときは同じコマンドを渡し直す (upgrade で上書き)。
-   ダブルクリックで入れた場合は設定画面から手で入れる (従来どおり)
+   ダブルクリックで入れた場合も、下の **共通設定** が取れれば設定は自動で入る
 2. `chrome://extensions` → 右上「デベロッパー モード」ON → 「パッケージ化されていない拡張機能を読み込む」→
    `%LOCALAPPDATA%\Programs\gh-actions-live\extension`
 3. ID が `oaadakmclelmnaieokjbhldfacfckaaj` になっていることを確認。その Chrome プロファイルで GitHub にログインしていること
 
 **以降の更新はダッシュボードの「更新」ボタン 1 クリック**。MSI を入れ直す必要は無い。
+
+### 全 PC 共通の設定 (GitHub の private repo)
+
+監視する repo や bridge の URL は PC ごとの `chrome.storage` にあり、新しい PC では空 (0 repos / bridge 未設定) から始まる。
+正本は private repo [ippoan/gh-actions-live-config](https://github.com/ippoan/gh-actions-live-config) の `config.json`:
+
+- 拡張は起動時・10 分ごと・ダッシュボードの boot ごとに `https://github.com/<repo>/raw/HEAD/config.json` を
+  **github.com のログイン cookie で**読む (PAT 不要。private の raw は `raw.githubusercontent.com` の `?token=` 付き URL へ飛ぶ)
+- **内容が変わったときだけ**、書いてあるキーを上書きする。設定画面や `set-config` で変えた値は repo 側が次に変わるまで残る。
+  インストーラーの `config.json` → repo の順に読むので、両方変われば repo が勝つ
+- 各 PC が読めたかは設定画面の「共通設定」行と `get-config` の `remoteConfigStatus` (`ok` / `error` / `hash` / `at`) で見る。
+  `HTTP 404` は「その Chrome プロファイルで github.com に未ログイン」か「repo が見えない」
+- 置き場は `configRepo` (`set-config` か config.json) で差し替えられる。既定は `ippoan/gh-actions-live-config`
 
 #### 更新の仕組み
 

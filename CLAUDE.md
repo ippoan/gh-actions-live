@@ -59,6 +59,11 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   全 repo の変化がそのセッションにだけ流れた。セッションは `ws /watch?repo=…&run=…` に繋いで絞る。
   拡張側のプロトコル (`/?role=extension`、`{"type":"ping"}` の keepalive、`POST /cmd`) は Node 版と同じに保つ
   (変えると拡張の更新が要る)。/watch への keepalive は Ping フレーム (テキストにすると通知になる)
+- **設定の正本は private repo `ippoan/gh-actions-live-config` の `config.json`** (`seed-config.js` が github.com の cookie で raw を読む)。
+  取り込みは**内容ハッシュが変わったときだけ** (毎回上書きすると設定画面 / `set-config` の値が 10 分で戻る)。
+  書いたキーだけ上書きするので、`accessLoginHosts: []` のような空値を置くと全 PC の値を消す。
+  キーの形の検査は `configPatch` 1 か所 (background / dashboard の `set-config` も使う)。
+  private の raw は `raw.githubusercontent.com` へリダイレクトするので `host_permissions` から外さない
 - 非管理 Windows では HKLM の `ExtensionSettings` を Chrome が捨てる (仕様)。
   「MSI で入らない」は #9 を先に読む
 - `mods/pr-bridge-watch` (Claude Mod) の module は Node も DOM も無い環境で動く。外界は全部 `$`

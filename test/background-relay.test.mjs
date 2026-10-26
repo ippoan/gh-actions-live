@@ -13,8 +13,8 @@ const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '../extensi
 const SRC = fs.readFileSync(file, 'utf8')
   .replace(/^import \{ createBridge \} from '.\/bridge-client.js';$/m,
            "const createBridge = () => ({ ensure() {}, connect() {}, send() {}, close() {}, open: false });")
-  .replace(/^import \{ applySeedConfig \} from '.\/seed-config.js';$/m,
-           'const applySeedConfig = async () => {};');
+  .replace(/^import \{ applySeedConfig, configPatch \} from '.\/seed-config.js';$/m,
+           'const applySeedConfig = async () => {}; const configPatch = () => ({});');
 assert.ok(!/^import /m.test(SRC), 'import を全部 stub に置き換えたこと');
 
 function boot() {
