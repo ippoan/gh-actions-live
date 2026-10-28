@@ -1,7 +1,7 @@
 //! `/watch` の絞り込み。1 接続 = 1 [`Watch`]。拡張から来た events / snapshot を受けて、
 //! 出すべき行 (前回出した状態から変わったものだけ) を返す。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -41,6 +41,12 @@ pub fn fmt_line(e: &Value, from: &str, label: &str) -> String {
     let title = field(e, "title");
     let title = if title.is_empty() { String::new() } else { format!(" — {}", title.chars().take(80).collect::<String>()) };
     format!("{} {} #{}: {arrow}{tag}{title}", field(e, "repo"), field(e, "workflow"), field(e, "run"))
+}
+
+/// 条件に関係なく全 /watch へ流す run: retest workflow (`Release Wave Retest`) の失敗。
+/// backend の更新で front 側 repo の retest が走るので、backend を見ているセッションにも届ける
+pub fn is_broadcast(e: &Value, status: &str) -> bool {
+    field(e, "workflow").to_lowercase().contains("retest") && is_bad(status)
 }
 
 /// 同じ key を重ねると OR、違う key は AND
@@ -99,11 +105,13 @@ pub struct Watch {
     filter: Filter,
     /// run_key -> (run 番号, 最後に出した状態)
     seen: HashMap<String, (String, String)>,
+    /// 条件外で流した retest 失敗 (run_key + 状態)。`seen` に混ぜると `done()` の判定が狂う
+    broadcast: HashSet<String>,
 }
 
 impl Watch {
     pub fn new(filter: Filter) -> Self {
-        Self { filter, seen: HashMap::new() }
+        Self { filter, seen: HashMap::new(), broadcast: HashSet::new() }
     }
 
     pub fn on_message(&mut self, msg: &Value) -> Vec<String> {
@@ -111,8 +119,11 @@ impl Watch {
         match msg["type"].as_str() {
             Some("events") => {
                 for e in msg["events"].as_array().into_iter().flatten() {
+                    let label = field(e, "label");
                     if self.filter.matches(e) {
-                        self.emit(e, &field(e, "from"), &field(e, "label"), &mut out);
+                        self.emit(e, &field(e, "from"), &label, &mut out);
+                    } else if is_broadcast(e, &label) && self.broadcast.insert(format!("{}#{label}", run_key(e))) {
+                        out.push(format!("retest 失敗 (全 watch へ): {}", fmt_line(e, &field(e, "from"), &label)));
                     }
                 }
             }
@@ -217,6 +228,24 @@ mod tests {
             { "repo": "o/r", "workflow": "CI", "run": "1", "label": "queued", "ref": "a".repeat(40) },
         ] });
         assert_eq!(w.on_message(&ev).len(), 1);
+    }
+
+    #[test]
+    fn retest_failure_reaches_unrelated_watch_once_without_finishing_it() {
+        let mut w = watch(&[("repo", "ippoan/rust-alc-api"), ("run", "77")]);
+        let ev = json!({ "type": "events", "events": [
+            { "repo": "ippoan/alc-app", "workflow": "Release Wave Retest", "run": "77", "from": "currently running", "label": "failed", "title": "release-wave-retest" },
+            { "repo": "ippoan/alc-app", "workflow": "Release Wave Retest", "run": "78", "from": "currently running", "label": "completed successfully" },
+            { "repo": "ippoan/alc-app", "workflow": "CI", "run": "79", "from": "currently running", "label": "failed" },
+        ] });
+        assert_eq!(
+            w.on_message(&ev),
+            ["retest 失敗 (全 watch へ): ippoan/alc-app Release Wave Retest #77: currently running → failed — release-wave-retest"]
+        );
+        // 拡張が同じ events を 2 度送っても 1 回だけ
+        assert!(w.on_message(&ev).is_empty());
+        // 同じ run 番号でも別 repo の retest で run 指定の watch を終わらせない
+        assert!(!w.done());
     }
 
     #[test]
