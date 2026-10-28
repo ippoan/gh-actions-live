@@ -233,8 +233,8 @@ function elapsed(t) {
   const h = d / 3600 | 0, m = d % 3600 / 60 | 0, s = d % 60;
   return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
 }
-// repo ごとに出すカードの上限。30 だと 1 列が縦に長すぎて他の repo が画面外に押し出される
-const MAX_CARDS_PER_REPO = 15;
+// repo ごとに出すカードの上限。多いと 1 列が縦に長すぎて他の repo が画面外に押し出される
+const MAX_CARDS_PER_REPO = 7;
 const duration = r =>
   cls(r.status) === 's-run' ? (r.at ? elapsed(r.at) : '') : (r.duration || '');
 
