@@ -233,6 +233,8 @@ function elapsed(t) {
   const h = d / 3600 | 0, m = d % 3600 / 60 | 0, s = d % 60;
   return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
 }
+// repo ごとに出すカードの上限。30 だと 1 列が縦に長すぎて他の repo が画面外に押し出される
+const MAX_CARDS_PER_REPO = 15;
 const duration = r =>
   cls(r.status) === 's-run' ? (r.at ? elapsed(r.at) : '') : (r.duration || '');
 
@@ -274,7 +276,7 @@ function render() {
       <h2>${esc(repo)}<span class="count">${
         bad ? `<span style="color:var(--bad)">✕ ${bad}</span> · ` : ''}${
         active ? `<span style="color:var(--run)">● ${active} 実行中</span> · ` : ''}${runs.length} runs</span></h2>
-      <div class="cards">${runs.slice(0, 30).map(card).join('') ||
+      <div class="cards">${runs.slice(0, MAX_CARDS_PER_REPO).map(card).join('') ||
         '<div class="card s-idle"><span class="dot"></span><div class="ttl" style="opacity:.6">読み込み中…</div></div>'}</div>
     </section>`;
   }).join('');
