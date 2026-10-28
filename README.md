@@ -254,6 +254,8 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan/rust-alc-api&workflow=CI&run=1619" }, ... })
   ```
   条件は `repo` / `ref` / `run` / `workflow` (部分一致・大小無視) / `by`。同じ key を重ねると OR、違う key は AND。
+  例外: workflow 名に `retest` を含む run (`Release Wave Retest`) の失敗は条件に関係なく全 /watch に
+  `retest 失敗 (全 watch へ): …` の 1 行で届く (backend の更新で front 側 repo の retest が走るため)。
   条件なしは 400 (全量が流れるのを防ぐ。本当に全部見るなら `all=1`)
   - 繋いだ時点の状態を bridge の写しから出す (進行中の run と、`run` 指定の run)。
     既に終わった run を指定しても待ちぼうけにならない
