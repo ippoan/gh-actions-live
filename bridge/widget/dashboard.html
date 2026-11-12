@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitHub Alive Watch</title>
+<!-- bridge の /mcp が返す MCP Apps のビュー (Refs #62)。見た目は extension/dashboard.html と揃える。
+     データはビュー専用のツール actions_dashboard_data の structuredContent。モデル向けの actions_dashboard は
+     要約のテキストしか返さない (structuredContent がモデルに渡って 9 万字になるため)。5 秒ごとにホスト経由で tools/call し直す
+     (iframe は Windows 側に出るので Linux の bridge へ直接は繋がない)。 -->
+<style>
+  :root {
+    --bg:var(--color-background-primary,#fff); --fg:var(--color-text-primary,#1f2328);
+    --dim:var(--color-text-secondary,#59636e); --line:var(--color-border-primary,#d1d9e0);
+    --card:var(--color-background-primary,#fff); --card2:var(--color-background-secondary,#f6f8fa);
+    --ok:#1a7f37; --run:#bf8700; --bad:#cf222e; --idle:#59636e; --accent:#0969da;
+    --sans:var(--font-sans,-apple-system,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif);
+    --mono:var(--font-mono,ui-monospace,monospace);
+  }
+  :root[data-theme="dark"] {
+    --bg:var(--color-background-primary,#0d1117); --fg:var(--color-text-primary,#e6edf3);
+    --dim:var(--color-text-secondary,#9198a1); --line:var(--color-border-primary,#30363d);
+    --card:var(--color-background-primary,#151b23); --card2:var(--color-background-secondary,#0d1117);
+    --ok:#3fb950; --run:#d29922; --bad:#f85149; --idle:#7d8590; --accent:#4493f8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 var(--sans); }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; padding:.55rem .9rem; border-bottom:1px solid var(--line); }
+  h1 { font-size:.9rem; margin:0; font-weight:600; }
+  .grow { flex:1; }
+  .pill { font-size:11px; padding:.15rem .55rem; border-radius:999px; border:1px solid var(--line); color:var(--dim); }
+  .live { width:8px; height:8px; border-radius:50%; background:var(--ok); }
+  .live.off { background:var(--bad); }
+  .live.on { animation:pulse 2s ease-out infinite; color:var(--ok); }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 color-mix(in srgb, currentColor 50%, transparent)} 100%{box-shadow:0 0 0 7px transparent} }
+  button { font:inherit; font-size:12px; padding:.28rem .6rem; border-radius:6px; border:1px solid var(--line); background:var(--card2); color:var(--fg); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  .err { margin:.6rem .9rem 0; padding:.4rem .6rem; border:1px solid var(--bad); color:var(--bad); border-radius:6px; font-size:12px; }
+
+  main { display:grid; gap:.9rem; padding:.9rem; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); align-items:start; }
+  section { border:1px solid var(--line); border-radius:10px; background:var(--card2); overflow:hidden; }
+  section > h2 { margin:0; padding:.5rem .75rem; font-size:12px; font-weight:600; border-bottom:1px solid var(--line);
+                 display:flex; align-items:center; gap:.5rem; font-family:var(--mono); }
+  .count { margin-left:auto; font-weight:400; color:var(--dim); font-size:11px; }
+  .cards { display:flex; flex-direction:column; gap:1px; background:var(--line); }
+  .card { background:var(--card); padding:.6rem .75rem; display:grid; grid-template-columns:auto 1fr auto;
+          gap:.15rem .6rem; align-items:start; color:var(--fg); text-decoration:none; cursor:pointer; }
+  .card:hover { background:var(--card2); }
+  .card:hover .ttl { text-decoration:underline; }
+  .card .dot { grid-row:1/3; width:12px; height:12px; border-radius:50%; margin-top:.2rem; }
+  .s-ok .dot{background:var(--ok)} .s-run .dot{background:var(--run)} .s-bad .dot{background:var(--bad)} .s-idle .dot{background:var(--idle)}
+  .s-run .dot { animation:pulse 1.6s ease-out infinite; color:var(--run); }
+  .s-run { background:linear-gradient(90deg, color-mix(in srgb, var(--run) 8%, transparent), transparent 60%); }
+  .s-bad { background:linear-gradient(90deg, color-mix(in srgb, var(--bad) 9%, transparent), transparent 60%); }
+  .ttl { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .meta { grid-column:2; color:var(--dim); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .when { grid-column:3; grid-row:1/3; text-align:right; color:var(--dim); font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .tag { display:inline-block; font-family:var(--mono); font-size:10.5px; padding:0 .35rem; border-radius:999px; border:1px solid var(--line); color:var(--dim); margin-left:.35rem; }
+  .empty { padding:3rem 1rem; text-align:center; color:var(--dim); grid-column:1/-1; }
+</style>
+</head>
+<body>
+<header>
+  <span class="live off" id="live"></span>
+  <h1>GitHub Alive Watch</h1>
+  <span class="pill" id="meta">読み込み中…</span>
+  <span class="grow"></span>
+  <button id="refresh" type="button">更新</button>
+</header>
+<div class="err" id="err" hidden></div>
+<main id="grid"><div class="empty">読み込み中…</div></main>
+<script>
+// MCP Apps のホストとの通信 (postMessage の JSON-RPC) を自前で持つ。ext-apps を CDN から読む形は
+// Claude のデスクトップアプリ (ローカルの MCP) で枠だけ出て中身が空になった (#62 の実機確認)。
+// 外から何も読まないので CSP にも依らない。メソッド名と版は ext-apps 1.7.5 の App に合わせている
+const PROTOCOL = "2026-01-26";
+const app = (() => {
+  let seq = 0;
+  const waiting = new Map();
+  const handlers = {};
+  const post = m => window.parent.postMessage(Object.assign({ jsonrpc: "2.0" }, m), "*");
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++seq;
+    waiting.set(id, { resolve, reject });
+    post({ id, method, params });
+  });
+  window.addEventListener("message", e => {
+    if (e.source !== window.parent) return;
+    const m = e.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id != null && !m.method) {  // 自分の request への応答
+      const w = waiting.get(m.id);
+      if (!w) return;
+      waiting.delete(m.id);
+      m.error ? w.reject(new Error(m.error.message || "error")) : w.resolve(m.result);
+      return;
+    }
+    if (m.id != null) {  // ホストからの request (teardown / ping) は空で返す
+      post({ id: m.id, result: {} });
+      return;
+    }
+    const h = handlers[m.method];
+    if (h) h(m.params || {});
+  });
+  // 高さを知らせる (autoResize 相当)
+  let lastH = 0;
+  const size = () => {
+    const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (h !== lastH) { lastH = h; post({ method: "ui/notifications/size-changed", params: { width: Math.ceil(document.documentElement.scrollWidth), height: h } }); }
+  };
+  new ResizeObserver(size).observe(document.documentElement);
+  return {
+    on: (method, fn) => { handlers[method] = fn; },
+    async connect() {
+      const r = await request("ui/initialize", {
+        appInfo: { name: "gh-actions-live-dashboard", version: "1.0.0" }, appCapabilities: {}, protocolVersion: PROTOCOL,
+      });
+      post({ method: "ui/notifications/initialized", params: {} });
+      size();
+      return (r && r.hostContext) || {};
+    },
+    callServerTool: p => request("tools/call", p),
+    openLink: p => request("ui/open-link", p),
+  };
+})();
+
+const TOOL = "actions_dashboard_data";
+const POLL_MS = 5000;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+let args = {};
+let data = null;
+let fetchedAt = null;
+
+function ago(t) {
+  if (!t) return "";
+  const d = (Date.now() - new Date(t)) / 1000;
+  if (d < 60) return Math.max(0, d | 0) + "秒前";
+  if (d < 3600) return (d / 60 | 0) + "分前";
+  if (d < 86400) return (d / 3600 | 0) + "時間前";
+  return (d / 86400 | 0) + "日前";
+}
+// 実行中は開始からの経過を数え上げる。終わった run は GitHub の表示 (`1m 5s`) のまま
+function elapsed(t) {
+  const d = Math.max(0, (Date.now() - new Date(t)) / 1000 | 0);
+  const h = d / 3600 | 0, m = d % 3600 / 60 | 0, s = d % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
+}
+const duration = r => r.state === "run" ? (r.at ? elapsed(r.at) : "") : (r.duration || "");
+
+function card(r) {
+  const dur = duration(r);
+  return `<a class="card s-${esc(r.state)}" data-href="${esc(r.href)}" href="${esc(r.href)}">
+    <span class="dot"></span>
+    <div class="ttl" title="${esc(r.title)}">${esc(r.title) || '<span style="opacity:.6">(no title)</span>'}</div>
+    <div class="when">${esc(r.status)}<br>${dur ? `⏱ ${esc(dur)} · ` : ""}${ago(r.at)}</div>
+    <div class="meta">${esc(r.workflow)} <b>#${esc(r.run)}</b>${r.ref ? `<span class="tag">${esc(r.ref)}</span>` : ""}${r.by ? ` · ${esc(r.by)}` : ""}</div>
+  </a>`;
+}
+
+function render() {
+  if (!data) return;
+  $("live").className = "live " + (data.connected ? "on" : "off");
+  const repos = data.repos || [];
+  $("meta").textContent = `${repos.length} repos · ${data.totalRuns} runs · ${
+    data.connected ? "拡張 接続中" : "拡張が bridge に繋がっていない (最後に届いた状態)"} · 更新 ${
+    fetchedAt ? new Date(fetchedAt).toLocaleTimeString() : "—"}`;
+  $("grid").innerHTML = repos.map(g => `<section>
+      <h2>${esc(g.repo)}<span class="count">${
+        g.bad ? `<span style="color:var(--bad)">✕ ${g.bad}</span> · ` : ""}${
+        g.active ? `<span style="color:var(--run)">● ${g.active} 実行中</span> · ` : ""}${g.total} runs</span></h2>
+      <div class="cards">${g.runs.map(card).join("") ||
+        '<div class="card s-idle"><span class="dot"></span><div class="ttl" style="opacity:.6">読み込み中…</div></div>'}</div>
+    </section>`).join("") || '<div class="empty">run がまだ届いていません (拡張のダッシュボードが bridge に繋がると出ます)</div>';
+}
+
+function parse(r) {
+  if (r && r.structuredContent) return r.structuredContent;
+  const t = r && r.content && r.content[0] && r.content[0].text;
+  try { return t ? JSON.parse(t) : null; } catch { return null; }
+}
+function take(r) {
+  const d = parse(r);
+  if (r.isError || !d || !d.repos) { showErr((r.content && r.content[0] && r.content[0].text) || "結果を読めない"); return; }
+  data = d; fetchedAt = Date.now(); showErr(""); render();
+}
+function showErr(m) { $("err").hidden = !m; $("err").textContent = m; }
+
+async function poll() {
+  try { take(await app.callServerTool({ name: TOOL, arguments: args })); }
+  catch (e) { showErr("更新に失敗: " + (e && e.message || e)); }
+}
+
+// リンクは sandbox の中では開けないのでホストに頼む
+$("grid").addEventListener("click", e => {
+  const a = e.target.closest("a[data-href]");
+  if (!a) return;
+  e.preventDefault();
+  app.openLink({ url: a.dataset.href }).catch(() => window.open(a.dataset.href, "_blank", "noopener"));
+});
+$("refresh").addEventListener("click", poll);
+
+// ホストの色 (CSS 変数) と明暗を当てる
+function applyHost(ctx) {
+  if (!ctx) return;
+  if (ctx.theme) { document.documentElement.dataset.theme = ctx.theme; document.documentElement.style.colorScheme = ctx.theme; }
+  const vars = ctx.styles && ctx.styles.variables;
+  if (vars) for (const k in vars) if (vars[k]) document.documentElement.style.setProperty(k, vars[k]);
+}
+
+app.on("ui/notifications/tool-input", p => { args = p.arguments || {}; });
+// actions_dashboard の結果は要約のテキストだけなので、表示はすぐ自分で取りに行く
+app.on("ui/notifications/tool-result", () => { poll(); });
+app.on("ui/notifications/host-context-changed", applyHost);
+
+app.connect().then(ctx => { applyHost(ctx); poll(); }).catch(e => showErr("ホストに繋がらない: " + (e && e.message || e)));
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>
