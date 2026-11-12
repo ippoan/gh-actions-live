@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  archiveTargetOf, headOfCommand, isAutoModeNoVerdict, isDesktopEntrypoint, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest,
+  archiveTargetOf, dashboardHintOf, headOfCommand, isAutoModeNoVerdict, isDesktopEntrypoint, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest,
   pullRefsOf, statusUrlOf, STOP_REQUEST, watchUrlOf,
 } from '../mods/pr-bridge-watch/hooks/pr-watch.ts';
 import { register, STOP_REQUEST_WAIT_MS } from '../mods/pr-bridge-watch/hooks/register.ts';
@@ -122,6 +122,12 @@ test('PR 作成に成功したら branch の /watch に Monitor を張り、cont
   assert.equal(calls.monitor[0].persistent, true);
   assert.equal(r.text, PR_OUT.text);
   assert.match(r.context.join('\n'), /Monitor で繋いだ \(task t1\)。local の branch が消えたら次の Actions 通知で/);
+  assert.match(r.context.join('\n'), /actions_dashboard を \{ repo: "ippoan\/gh-actions-live", since: "\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ" \}/);
+});
+
+test('ウィジェットの一文は PR の 1 分前からの since を秒で切って出す', () => {
+  const now = Date.parse('2026-11-12T13:12:05.678Z');
+  assert.match(dashboardHintOf('o/r', now), /\{ repo: "o\/r", since: "2026-11-12T13:11:05Z" \}/);
 });
 
 test('同じ branch は二度張らない', async () => {
@@ -173,7 +179,7 @@ test('auto mode の分類器が無判定で断ったら、自分で張れとは�
     const r = await run('gh pr create --fill', PR_OUT);
     assert.equal(calls.monitor.length, 1);
     assert.equal(r.text, PR_OUT.text);
-    assert.deepEqual(r.context, ['pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。https://github.com/ippoan/gh-actions-live/pull/46 の CI は PR の監視か gh pr checks で確認する']);
+    assert.deepEqual(r.context.filter(c => !c.includes("actions_dashboard")), ['pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。https://github.com/ippoan/gh-actions-live/pull/46 の CI は PR の監視か gh pr checks で確認する']);
     assert.doesNotMatch(r.context[0], /Monitor\(\{|gave no verdict|Issue the action again|\n/);
     assert.deepEqual(calls.stop, []);
   }
@@ -200,7 +206,7 @@ test('desktop で auto mode の分類器が無判定で断ったら、引数つ�
     const { run, calls } = harness({ entrypoint: 'claude-desktop', monitor });
     const r = await run('gh pr create --fill', PR_OUT);
     assert.equal(calls.monitor.length, 1);
-    assert.deepEqual(r.context, ['pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。https://github.com/ippoan/gh-actions-live/pull/46 の CI を見届けるため自分で Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a" }, description: "ippoan/gh-actions-live PR #46 CI [feat-a]", timeout_ms: 1800000 })']);
+    assert.deepEqual(r.context.filter(c => !c.includes("actions_dashboard")), ['pr-bridge-watch: auto mode では hook から Monitor を張れない (分類器が判定を返さない)。https://github.com/ippoan/gh-actions-live/pull/46 の CI を見届けるため自分で Monitor({ ws: { url: "ws://127.0.0.1:8799/watch?repo=ippoan%2Fgh-actions-live&ref=feat-a" }, description: "ippoan/gh-actions-live PR #46 CI [feat-a]", timeout_ms: 1800000 })']);
     assert.doesNotMatch(r.context[0], /gave no verdict|Issue the action again|\n/);
   }
 });

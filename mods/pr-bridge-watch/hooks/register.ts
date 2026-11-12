@@ -3,6 +3,7 @@ import type { EngineInterface, ProcessRunInit, ProcessRunResult, Register, ToolC
 import {
   ARCHIVE_TOOL,
   archiveTargetOf,
+  dashboardHintOf,
   headOfCommand,
   isAutoModeNoVerdict,
   isDesktopEntrypoint,
@@ -162,6 +163,7 @@ export const register: Register = (on, options) => {
     const lifetime = desktop ? { timeout_ms: 1800000 } : { persistent: true, timeout_ms: 3600000 }
     const lifetimeArgs = desktop ? 'timeout_ms: 1800000' : 'persistent: true, timeout_ms: 3600000'
     const notes: string[] = []
+    const hints: string[] = [] // ウィジェットを出させる一文。見張りの知らせの後に並べる
     for (const pr of prs) {
       const ref = (await headRefOf(host, pr.url)) ?? headOfCommand(e.command)
       if (ref === null) {
@@ -170,6 +172,7 @@ export const register: Register = (on, options) => {
       }
       const key = `${pr.repo}#${ref}`
       if (watches.has(key)) continue
+      hints.push(dashboardHintOf(pr.repo, Date.now()))
 
       const url = watchUrlOf(bridge, pr.repo, ref)
       const description = `${pr.repo} PR #${pr.number} CI [${ref}]`
@@ -214,8 +217,8 @@ export const register: Register = (on, options) => {
         notes.push(isAutoModeNoVerdict(String(err)) ? noVerdict() : `pr-bridge-watch: Monitor の起動に失敗 (${String(err)})。自分で ${manual}`)
       }
     }
-    if (notes.length === 0) return result
-    return { ...result, context: [...(result.context ?? []), ...notes] }
+    if (notes.length + hints.length === 0) return result
+    return { ...result, context: [...(result.context ?? []), ...notes, ...hints] }
   })
 }
 

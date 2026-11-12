@@ -32,6 +32,16 @@ export function watchUrlOf(bridge: string, repo: string, ref: string): string {
   return `${base}/watch?repo=${encodeURIComponent(repo)}&ref=${encodeURIComponent(ref)}`
 }
 
+/**
+ * PR を作ったら、その repo の run をその時刻以降だけウィジェット (connector の actions_dashboard) で出させる一文 (#62)。
+ * since は PR を作った時刻の 1 分前 (作成直後に走り出す CI を取りこぼさないため)。秒より下は落とす
+ */
+export function dashboardHintOf(repo: string, nowMs: number): string {
+  const since = new Date(nowMs - 60_000).toISOString().replace(/\.\d+Z$/, 'Z')
+  return `pr-bridge-watch: この PR の CI はウィジェットで見せる。connector「gh-action-live」の actions_dashboard を ` +
+    `{ repo: "${repo}", since: "${since}" } で 1 回呼ぶ (全 repo は出さない)`
+}
+
 /** bridge の状態 (`GET /`) を叩く http URL */
 export function statusUrlOf(bridge: string): string {
   return bridge.replace(/^ws(s?):/, 'http$1:').replace(/\/+$/, '') + '/'
