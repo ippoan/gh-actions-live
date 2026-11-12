@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  archiveTargetOf, dashboardHintOf, headOfCommand, isAutoModeNoVerdict, isDesktopEntrypoint, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest,
+  archiveTargetOf, dashboardHintOf, headOfCommand, isAutoModeNoVerdict, isDesktopEntrypoint, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest, isTaskGone,
   pullRefsOf, statusUrlOf, STOP_REQUEST, watchUrlOf,
 } from '../mods/pr-bridge-watch/hooks/pr-watch.ts';
 import { register, STOP_REQUEST_WAIT_MS } from '../mods/pr-bridge-watch/hooks/register.ts';
@@ -53,6 +53,12 @@ test('/watch と状態の URL', () => {
   assert.equal(watchUrlOf('ws://127.0.0.1:8799/', 'o/r', 'claude/x-1'), 'ws://127.0.0.1:8799/watch?repo=o%2Fr&ref=claude%2Fx-1');
   assert.equal(statusUrlOf('ws://127.0.0.1:8799'), 'http://127.0.0.1:8799/');
   assert.equal(statusUrlOf('wss://b.example/'), 'https://b.example/');
+});
+
+test('TaskStop の「task が無い」の判定', () => {
+  assert.equal(isTaskGone('<\\~tool_use_error>No task found with ID: sxgvoaoos<\\~/tool_use_error>'), true);
+  assert.equal(isTaskGone('no such task'), false);
+  assert.equal(isTaskGone(''), false);
 });
 
 test('auto mode の無判定と desktop の判定', () => {
@@ -308,6 +314,22 @@ test('TaskStop が拒否されても自分の archive は止めず、止めら�
   await run('gh pr create --fill', PR_OUT);
   assert.equal((await archiveCall('self')).text, 'archived');
   assert.match(calls.log[0], /止められなかった \(no such task\)/);
+});
+
+test('Monitor が先に終わっていた (No task found) なら止められなかったと出さず、既に終わっていたと log に残す', async () => {
+  const { run, archiveCall, calls } = harness({ taskStop: () => ({ isError: true, text: '<\\~tool_use_error>No task found with ID: t1<\\~/tool_use_error>' }) });
+  await run('gh pr create --fill', PR_OUT);
+  assert.equal((await archiveCall('self')).text, 'archived');
+  assert.match(calls.log[0], /Monitor \(task t1\) は既に終わっていた/);
+  assert.doesNotMatch(calls.log[0], /止められなかった/);
+});
+
+test('TaskStop が No task found を投げても既に終わっていたと log に残す', async () => {
+  const { run, archiveCall, calls } = harness({ taskStop: () => { throw new Error('No task found with ID: t1'); } });
+  await run('gh pr create --fill', PR_OUT);
+  assert.equal((await archiveCall('self')).text, 'archived');
+  assert.match(calls.log[0], /Monitor \(task t1\) は既に終わっていた/);
+  assert.doesNotMatch(calls.log[0], /止められなかった/);
 });
 
 test('他のセッションの archive が通れば何もしない', async () => {
