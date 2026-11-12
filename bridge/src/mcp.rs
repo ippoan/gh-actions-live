@@ -23,6 +23,8 @@ use crate::watch::{field, is_active, is_bad};
 pub const TOOL: &str = "actions_dashboard";
 /// ビュー専用 (モデルには出さない)。repo ごとの run を structuredContent で返す
 pub const DATA_TOOL: &str = "actions_dashboard_data";
+/// actions_dashboard の結果の `_meta` に載せるウィジェット用データのキー (dashboard.html と同じ)
+pub const META_KEY: &str = "gh-actions-live/dashboard";
 pub const VIEW_URI: &str = "ui://gh-actions-live/dashboard.html";
 /// MCP Apps の HTML リソースの mimeType (ext-apps の RESOURCE_MIME_TYPE と同値)
 pub const MIME: &str = "text/html;profile=mcp-app";
@@ -179,7 +181,12 @@ pub fn handle(req: &Value, data: impl FnOnce(Option<&str>) -> Value) -> Option<V
             let filter = params["arguments"]["repo"].as_str();
             match params["name"].as_str() {
                 // モデル向け: 要約だけ (structuredContent を付けるとそちらがモデルに渡る)
-                Some(TOOL) => ok(&id, json!({ "content": [{ "type": "text", "text": summary(&data(filter)) }] })),
+                // ウィジェットには _meta で同じデータを渡す (_meta はモデルに渡らない)。Claude Code のホストは
+                // ウィジェットからの tools/call を受けない ("Method not found") ので、表示はこの結果だけで描く
+                Some(TOOL) => {
+                    let d = data(filter);
+                    ok(&id, json!({ "content": [{ "type": "text", "text": summary(&d) }], "_meta": { META_KEY: d } }))
+                }
                 Some(DATA_TOOL) => {
                     let d = data(filter);
                     ok(&id, json!({ "content": [{ "type": "text", "text": summary(&d) }], "structuredContent": d }))
@@ -277,6 +284,7 @@ mod tests {
         assert_eq!(tools["result"]["tools"][1]["_meta"]["ui"]["visibility"], json!(["app"]));
         let model = call("tools/call", json!({ "name": TOOL, "arguments": {} }));
         assert!(model["result"].get("structuredContent").is_none(), "モデル向けに JSON を渡さない");
+        assert!(model["result"]["_meta"][META_KEY]["repos"].is_array(), "ウィジェットには _meta で渡す");
         assert!(model["result"]["content"][0]["text"].as_str().unwrap().contains("repos"));
         assert!(call("tools/call", json!({ "name": DATA_TOOL, "arguments": {} }))["result"]["structuredContent"].is_object());
         assert_eq!(call("tools/call", json!({ "name": "nope" }))["error"]["code"], -32602);
