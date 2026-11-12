@@ -50,7 +50,7 @@ $('save').addEventListener('click', async () => {
   setTimeout(() => ($('save').textContent = '保存'), 1200);
 });
 
-// 外から変わったとき (bridge の set-config / インストーラーの config.json) は取り込む。
+// 外から変わったとき (bridge の set-config / extension/ の config.json) は取り込む。
 // ただし編集中は触らない — ユーザーの入力が正。
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;

@@ -78,128 +78,48 @@ chrome.windows.create({ url, type: 'popup',  state: 'fullscreen' })      // 全�
 
 ## インストール
 
-MSI は 1 つで、**既定は perUser (admin 不要)**。管理端末向けの機能は `ALLUSERS=1` を付けたときだけ出る。
+拡張は Linux の headless Chromium で動かす (下の「Linux で拡張を動かす」)。作業ツリーの `extension/` を
+`--load-extension` で直接読むので、配布物 (Release / インストーラー) は無い。
+更新は作業ツリーを `git pull` してから、ダッシュボードの「再読込」か bridge の `{"command":"reload"}` で拡張を再起動する。
 
-| 端末 | コマンド | 何が起きるか |
-|---|---|---|
-| 非管理 (Windows Home / WORKGROUP / 個人 PC) — **こちらが既定** | `msiexec /i gh-actions-live-x.y.z-x64.msi` (ダブルクリックでも同じ) | `%LOCALAPPDATA%\Programs\gh-actions-live\extension` に配置 + **自動更新タスク**を登録。Chrome への初回読み込みだけ手動 |
-| 管理端末 (AD / Entra / Chrome Enterprise Core 登録済み) | `msiexec /i gh-actions-live-x.y.z-x64.msi ALLUSERS=1` (UAC 昇格) | `C:\Program Files\gh-actions-live` に配置 + HKLM に `ExtensionSettings` (force_installed)。Chrome 再起動だけで入り、更新も Chrome が拾う |
-| 非管理端末を Chrome Enterprise Core に登録したい | `… ALLUSERS=1 ENROLLMENTTOKEN=<token>` | 上に加えて `CloudManagementEnrollmentToken` を書く。token は Google Admin で発行 |
+### 共通の設定 (GitHub の private repo)
 
-なぜ分かれるか: Chrome の公式仕様で、Windows では Web Store **外** の拡張を `force_installed` できるのは
-管理端末だけ。非管理端末ではレジストリに正しく書けていても Chrome が黙って捨てる
-(`chrome://policy` に `[BLOCKED]` + 警告で出る)。詳細は [#9](https://github.com/ippoan/gh-actions-live/issues/9)。
-自分の端末は `dsregcmd /status` で分かる (`AzureAdJoined` / `DomainJoined` / `EnterpriseJoined` が全部 `NO` なら非管理)。
-
-### 非管理端末での手順 (既定)
-
-1. [Releases](https://github.com/ippoan/gh-actions-live/releases) から `gh-actions-live-*-x64.msi` を落とし、
-   **設定ごと** インストールする (admin 不要):
-
-   ```
-   msiexec /i gh-actions-live-x.y.z-x64.msi REPOS=owner/repo,owner/repo2 BRIDGEURL=ws://host:8799 NOTIFY=0
-   ```
-
-   property は全部任意。渡した値は `extension\config.json` に書かれ、拡張が起動時に取り込む。
-   **設定画面での手入力は不要**。拡張を入れ直して `chrome.storage` が消えても config.json から戻る。
-   あとから変えたいときは同じコマンドを渡し直す (upgrade で上書き)。
-   ダブルクリックで入れた場合も、下の **共通設定** が取れれば設定は自動で入る
-2. `chrome://extensions` → 右上「デベロッパー モード」ON → 「パッケージ化されていない拡張機能を読み込む」→
-   `%LOCALAPPDATA%\Programs\gh-actions-live\extension`
-3. ID が `oaadakmclelmnaieokjbhldfacfckaaj` になっていることを確認。その Chrome プロファイルで GitHub にログインしていること
-
-**以降の更新はダッシュボードの「更新」ボタン 1 クリック**。MSI を入れ直す必要は無い。
-
-### 全 PC 共通の設定 (GitHub の private repo)
-
-監視する repo や bridge の URL は PC ごとの `chrome.storage` にあり、新しい PC では空 (0 repos / bridge 未設定) から始まる。
+監視する repo や bridge の URL はブラウザのプロファイルの `chrome.storage` にあり、新しいプロファイルでは空 (0 repos / bridge 未設定) から始まる。
 正本は private repo [ippoan/gh-actions-live-config](https://github.com/ippoan/gh-actions-live-config) の `config.json`:
 
 - 拡張は起動時・10 分ごと・ダッシュボードの boot ごとに `https://github.com/<repo>/raw/HEAD/config.json` を
   **github.com のログイン cookie で**読む (PAT 不要。private の raw は `raw.githubusercontent.com` の `?token=` 付き URL へ飛ぶ)
 - **内容が変わったときだけ**、書いてあるキーを上書きする。設定画面や `set-config` で変えた値は repo 側が次に変わるまで残る。
-  インストーラーの `config.json` → repo の順に読むので、両方変われば repo が勝つ
-- 各 PC が読めたかは設定画面の「共通設定」行と `get-config` の `remoteConfigStatus` (`ok` / `error` / `hash` / `at`) で見る。
-  `HTTP 404` は「その Chrome プロファイルで github.com に未ログイン」か「repo が見えない」
+  `extension/` に置いた `config.json` (任意。その作業ツリーだけの値) → repo の順に読むので、両方変われば repo が勝つ
+- 読めたかは設定画面の「共通設定」行と `get-config` の `remoteConfigStatus` (`ok` / `error` / `hash` / `at`) で見る。
+  `HTTP 404` は「そのブラウザで github.com に未ログイン」か「repo が見えない」
 - 置き場は `configRepo` (`set-config` か config.json) で差し替えられる。既定は `ippoan/gh-actions-live-config`
 
-#### 更新の仕組み
-
-Chrome は Web Store 外の拡張の `update_url` を相手にしないので自前で組む。拡張はディスクに
-書けないため、MSI が小さな **native messaging host** (`host.bat` → `host.ps1`) を
-`HKCU\Software\Google\Chrome\NativeMessagingHosts` に登録する (Policies 配下ではないので admin 不要)。
-
-1. ヘッダに `v0.0.12 → v0.0.13 あり` と出たら **「更新」ボタン**を押す
-2. 拡張が host を呼び、host が `update.ps1` を実行: `update.xml` の版を見て
-   `gh-actions-live-extension.zip` を落とし、sha256 を照合して `extension\` を差し替える (ログは `update.log`)
-3. background が `reloadSelf()`: **先にダッシュボードのタブを `about:blank` に差し替えてから**
-   `chrome.runtime.reload()`。reload 後は**同じタブ**にダッシュボードを読み込み直す
-   (何もせず reload すると空ウィンドウが残る → #30。閉じて開き直すと新規ウィンドウが
-   前面に出ない → #32)
-
-Linux 側 (bridge) から `{"command":"update"}` を送っても同じことが起きる。
-定期的に勝手に上げたい人は `update.ps1 -Register` でタスク スケジューラに登録できる (既定では登録しない)。
-
-MSI を使わずに zip を展開して読み込むこともできる。その場合は host が無いので、
-新しい zip を同じフォルダに上書き展開して拡張カードの ↻ を押す。
-
-#### 再読込 / 更新の手動確認 (実機でしか分からない)
+### 再読込の手動確認 (実機でしか分からない)
 
 拡張の再起動 (`chrome.runtime.reload()`) は**ページを殺すだけでウィンドウは閉じない**ので、
 放っておくと空のウィンドウが 1 枚残る (#30)。かといって先にタブを閉じると、復活が新規ウィンドウに
-なり、reload 直後の service worker からでは Windows の foreground lock で**前面に出ない** (#32)。
+なり、reload 直後の service worker からでは**前面に出ない** (#32)。
 reload は background の `reloadSelf()` に一本化してあり、**先にダッシュボードのタブを
 `about:blank` に差し替えてから** reload し、`onInstalled` で**同じタブ**に読み込み直す。
 実機で見るのはここ:
 
-1. ダッシュボードを開いた状態で「再読込」→ **同じウィンドウのまま**中身が復活し、**前面にある**こと
+1. ダッシュボードを開いた状態で「再読込」→ **同じウィンドウのまま**中身が復活すること
    (空白のウィンドウが増えていない / ウィンドウが消えていない)
-2. bridge から `{"command":"update"}` / `{"command":"reload"}` を送っても同じこと
-3. 10 分ごとの self-update (ディスクの版が上がったとき) でも同じこと
+2. bridge から `{"command":"reload"}` を送っても同じこと
 
-### 管理端末での手順
+## CI
 
-`ALLUSERS=1` を付けて実行 (UAC 昇格が 1 回) → Chrome を再起動。それだけで入る。
-HKLM の `ExtensionSettings` は `update_url` が `releases/latest/download/...` の固定 URL なので、
-版が上がってもポリシーを書き換えなくてよい。Chrome に「組織によって管理されています」が出て、
-ユーザーは拡張を Chrome から削除できない (アンインストールは「アプリと機能」から MSI を消す)。
-
-`HKCU\Software\Policies` はユーザー権限で書けないため、ポリシー系は `ALLUSERS=1` (HKLM) のときだけ出る。
-
-### トラブルシュート
-
-- **`chrome://policy` に `ExtensionSettings` が載っていない** → `ALLUSERS=1` で入れたか。
-  `reg query "HKLM\SOFTWARE\Policies\Google\Chrome" /v ExtensionSettings` で単一の REG_SZ に JSON が入っているか。Chrome は再起動したか
-- **載っているが `[BLOCKED]` + 警告** → 端末が非管理。仕様なので perUser (既定) の手順を使う
-- **「更新」ボタンが失敗する** → `%LOCALAPPDATA%\Programs\gh-actions-live\update.log` を見る。
-  「native host が見つかりません」なら MSI で入れていない (zip 展開) か、
-  `reg query HKCU\Software\Google\Chrome\NativeMessagingHosts\jp.ippoan.gh_actions_live` が無い
-
-## リリースサイクル
-
-バージョンは**自動採番**する。直近の `v*` tag の patch を +1、tag が無ければ `0.0.1` から。
-
-- **stable**: `main` への push で自動的に次の版を採番し、`vX.Y.Z` の Release を作る (Latest)
-- **auto-merge**: PR (non-draft) の CI が全部緑になると、org 標準の reusable
-  (`ippoan/ci-workflows/.github/workflows/auto-merge.yml`) が squash merge を queue する。
-  **PR を出して緑になれば、そのまま新しい版が公開される**
-- **dev**: PR (non-draft) の CI が `dev-<run_number>` の prerelease を PR head に打つ。
-  **merge を待たずに MSI を試せる。** 版は「その PR が出す予定の stable と同じ」
-- **手動**: 任意の版を切りたい場合は Release workflow を `workflow_dispatch` で
-  実行し、`version` に `X.Y.Z` を指定する
-
-tag は Release 作成時に打たれる。手で tag を push する経路は持たない (二重採番になるため)。
-manifest の version は tag から stamp されるので、repo に入っている値は開発用の目安。
+PR (non-draft) の CI (JS 構文 / `npm test` / manifest / 参照ファイル / bridge の `cargo test`) が全部緑になると、
+org 標準の reusable (`ippoan/ci-workflows/.github/workflows/auto-merge.yml`) が squash merge する。
+Release も tag も出さない。manifest の `version` は固定 (拡張は作業ツリーから直接読むので版で配らない)。
 
 ## リポジトリ構成
 
 ```
-extension/          MV3 拡張本体 (これを Chrome に読み込む)
-installer/main.wxs  MSI (WiX v4+、perUserOrMachine)。配置 + 自動更新タスク + (ALLUSERS=1 で) Chrome ポリシー
-installer/update.ps1 更新スクリプト (native host / 手動 / 任意でタスク登録)
-installer/host.ps1   native messaging host (「更新」ボタンの実体)
+extension/          MV3 拡張本体 (linux-browser/ の Chromium がこれを直接読む)
 bridge/             Claude Code (Linux) 側の常駐リレー (Rust / systemd --user。下記)
-linux-browser/      拡張を Linux の headless Chromium で常駐させる一式 (Windows の Chrome の代わり。下記)
+linux-browser/      拡張を Linux の headless Chromium で常駐させる一式 (下記)
 mods/pr-bridge-watch Claude Mod: PR を作ったら branch の CI を bridge の /watch に繋ぎ、右側パネルに出す (下記)
 .claude-plugin/     上の mod を配る plugin marketplace
 ```
@@ -213,11 +133,11 @@ mods/pr-bridge-watch Claude Mod: PR を作ったら branch の CI を bridge の
 - `data-channel` のトークンは発行時刻 `t` 入りの時限。20 分ごとにページを取り直して更新する。
 - **未文書の内部プロトコル**なので、GitHub 側の変更で黙って壊れうる。
 
-## Linux で拡張を動かす (Windows の Chrome の代わり、#62)
+## Linux で拡張を動かす (#62)
 
-拡張 (`extension/`) をそのまま、bridge と同じ Linux の headless Chromium に載せて常駐させる。データの取り方は
-Windows と同じ (ログイン済みのブラウザが Actions ページと alive の push を読む。GitHub の API は叩かない)。
-拡張 ID も同じ (`manifest.json` の `key`)。設定は共通設定 (`config.json`) から入る。
+拡張 (`extension/`) をそのまま、bridge と同じ Linux の headless Chromium に載せて常駐させる。ログイン済みのブラウザが
+Actions ページと alive の push を読む (GitHub の API は叩かない)。
+拡張 ID は `manifest.json` の `key` で固定 (`chromium.sh` の `EXT_ID`)。設定は共通設定 (`config.json`) から入る。
 
 ```
 # 1 回だけ
@@ -250,21 +170,21 @@ Claude in Chrome は github.com のタブで JS を実行できるので、**設
 chrome.runtime.sendMessage('oaadakmclelmnaieokjbhldfacfckaaj',
   { command: 'set-config', repos: ['owner/repo'], bridgeUrl: 'ws://host:8799', notify: false },
   r => console.log(r));
-// command: get-config / open-dashboard / access-login / update / check-update / native-ping / status / alive-reset / reload も同じ経路で使える
+// command: get-config / open-dashboard / status / alive-reset / reload も同じ経路で使える
 ```
 
 ## Claude Code への途中通知 (bridge)
 
-拡張は GitHub を見ているだけなので、そのままでは Claude Code (別マシン) に何も届かない。
+拡張は GitHub を見ているだけなので、そのままでは Claude Code に何も届かない。
 `bridge/` (Rust の常駐サーバー `gh-actions-bridge`) を Linux 側で **1 本だけ** 動かし、拡張からそこへ
 **outbound** で WebSocket を張ると双方向になる。Claude Code の各セッションは bridge に**繋ぐだけ**で、
 bridge 自体を起動しない (セッションが Monitor で起動していた頃は 8799 を取り合い、起動したセッションが
 終わると bridge ごと落ち、全 repo の変化がそのセッションにだけ流れていた)。
 
 ```
-Windows Chrome 拡張 ──ws://<linux>:8799/?role=extension──▶ gh-actions-bridge (systemd --user)
-        ▲                                                        │ ws /watch?repo=…&run=…
-        └──── {"type":"command",...} ◀── POST /cmd               ▼ (条件に合う run だけ、1 フレーム 1 行)
+拡張 (headless Chromium) ──ws://127.0.0.1:8799/?role=extension──▶ gh-actions-bridge (systemd --user)
+        ▲                                                              │ ws /watch?repo=…&run=…
+        └──── {"type":"command",...} ◀── POST /cmd                     ▼ (条件に合う run だけ、1 フレーム 1 行)
                                                        Claude Code の各セッション (Monitor の ws ソース)
 ```
 
@@ -302,7 +222,7 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   接続したときにウィジェット (`ui://`) を先読みして保存し、セッションをまたいで使い回す。bridge を入れ替えても、
   新しいセッションでも、繋ぎ直すまで古い HTML が描かれる (#62 で 3 回踏んだ。見出しの版で見分けられる)。
   Code タブのアプリはウィジェットからの `tools/call` を受けない (`Method not found`) が、`serverTools` の無いホストではウィジェットが `resources/read` (`gh-actions-live://dashboard?repo=&since=`) で 5 秒ごとに更新する (#74)。
-  データは `actions_dashboard` の結果の `_meta` で渡し、最新にしたいときは呼び直す
+  最初のデータは `actions_dashboard` の結果の `_meta` で渡し、以後はウィジェットが `resources/read` で自分で更新する
   読み取り専用 (書き込みの口は無い)。登録は user scope で 1 回:
   ```
   claude mcp add --transport http --scope user gh-actions-live http://127.0.0.1:8799/mcp
@@ -323,27 +243,6 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   自分の PR に絞るのは `set-config` ではなく `/watch` の条件で
 - Linux → 拡張: `curl -X POST localhost:8799/cmd -d '{"command":"open-dashboard","mode":"popup"}'`
   でウィンドウを遠隔で開ける。`refresh` / `snapshot` も受ける
-- Cloudflare Access のログイン承認: `curl -X POST localhost:8799/cmd -d '{"command":"access-login","url":"<cloudflared access login が出した URL>"}'`
-  で承認ページを前面のウィンドウに開く。トークンを取りに行くのは Linux 側の `cloudflared` 自身なので、
-  ブラウザは「Approve」を押すだけでよく、Windows の Chrome で承認しても通る。
-  bridge には認証が無く、8799 に届く者が Chrome で任意のページを開けると capability の穴になるので、
-  **開ける URL は 3 条件を全部満たすものだけ**:
-  1. スキームが `https:`
-  2. ホストが **`accessLoginHosts` に完全一致** (後方一致・ワイルドカードは無し。
-     `endsWith('.ippoan.org')` 型は `evil-ippoan.org` のような取り違えを招くため)。
-     **未設定・空配列なら全部拒否 (deny-by-default)** — 設定を入れ忘れた環境が一番危険になる既定は採らない
-  3. パスが `/cdn-cgi/access/cli` **ちょうど** (`new URL()` が `..` を畳んだ後の値で完全一致)
-
-  加えて **userinfo 付きの URL は無条件で拒否**する。`https://dtako.ippoan.org@evil.example.com/...`
-  は文字列としては正規のホストに見えるのに実際に開く先は `evil.example.com` で、
-  `URL.host` に userinfo は入らないためホスト検査だけでは防げない (なりすまし)。
-
-  許可ホストの設定 / 確認:
-  ```
-  curl -X POST localhost:8799/cmd -d '{"command":"set-config","accessLoginHosts":["dtako.ippoan.org"]}'
-  curl -X POST localhost:8799/cmd -d '{"command":"get-config"}'   # accessLoginHosts が返る
-  ```
-  弾いた URL はログにも応答にも全体を出さない (`token=` の nonce が乗っている。出すのはホスト名とパスまで)
 - 診断: `curl -X POST localhost:8799/cmd -d '{"command":"status"}'`。ダッシュボードからは
   `{"type":"status", alive:{connected, fails, lastState, lastMessageAt, idleMs, idleLimitMs, idleResets,
   watchdogArmed, idleArmed, reconnectPending, background:{state, lastMessageAt, idleMs, relay:{readyState, tokens, lastFrameAt, sinceLastFrameMs, frames}}}}`、

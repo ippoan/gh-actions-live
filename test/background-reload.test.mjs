@@ -1,7 +1,7 @@
 // background.js の「拡張の再起動」まわりの回帰テスト (#30 / #32)。
 // chrome.runtime.reload() は拡張のページを殺すがウィンドウ/タブは閉じないので、
 // 放っておくと空ウィンドウが 1 枚残る (#30)。かといって tabs.remove で閉じると復活が
-// 新規ウィンドウになり、reload 直後は Windows の foreground lock で前面に出ない (#32)。
+// 新規ウィンドウになり、reload 直後は前面に出ない (#32)。
 // → ダッシュボードのタブは about:blank に差し替え、reload 後に同じタブへ読み込み直す。
 // background.js は ESM + chrome API 前提なので、import を stub に差し替えて vm で走らせる。
 import test from 'node:test';
@@ -25,11 +25,10 @@ const DASH_URL = 'chrome-extension://x/dashboard.html';
 //   dashTabs      ダッシュボードとして query に一致するタブ
 //   invalidTabs   chrome-extension://invalid/* に一致するタブ (reload の残骸)
 //   pingOk        ダッシュボードのタブが ping に答えるか (false = 死んでいる)
-//   diskVersion   manifest.json (ディスク) の版。running は '0.0.0'
 //   stored        chrome.storage.local の初期値
 //   updateThrows  tabs.update が throw する (タブが消えている)
 function boot(opts = {}) {
-  const { dashTabs = [], invalidTabs = [], allTabs = null, pingOk = true, diskVersion = '0.0.0',
+  const { dashTabs = [], invalidTabs = [], allTabs = null, pingOk = true,
           stored = {}, removeThrows = false, queryThrows = false, updateThrows = false } = opts;
   const calls = [];                          // 呼ばれた順そのもの
   const listeners = { runtime: [], installed: [] };
@@ -93,7 +92,7 @@ function boot(opts = {}) {
   };
   const ctx = {
     chrome, console, setTimeout, clearTimeout, Date, Promise,
-    fetch: async () => ({ json: async () => ({ version: diskVersion }) })
+    fetch: async () => ({ json: async () => ({}) })
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
@@ -162,23 +161,6 @@ test('reload コマンド: tabs.query が throw しても runtime.reload まで�
   await h.send({ target: 'background', type: 'command', command: 'reload' });
   await h.reloadedP;
   assert.ok(h.names().includes('runtime.reload'), JSON.stringify(h.calls));
-});
-
-test('ディスクの版が変わったら、タブを about:blank にしてから reload する (self-update)', async () => {
-  const h = boot({ dashTabs: [{ id: 21, windowId: 2 }], diskVersion: '9.9.9' });
-  await h.send({ target: 'background', type: 'command', command: 'check-update' });
-  await h.reloadedP;
-  assertBlankThenReload(h, 21);
-  assert.equal(h.store.reopenTabId, 21);
-  assert.equal(h.store.lastSelfUpdate, '0.0.0 -> 9.9.9');
-});
-
-test('ディスクの版が同じなら reload しない', async () => {
-  const h = boot({ dashTabs: [{ id: 21, windowId: 2 }], diskVersion: '0.0.0' });
-  await h.send({ target: 'background', type: 'command', command: 'check-update' });
-  assert.ok(!h.names().includes('runtime.reload'));
-  assert.ok(!h.names().includes('tabs.remove'));
-  assert.ok(!h.names().includes('tabs.update'));
 });
 
 test('open-dashboard: 既存タブが ping に答えなければ同じウィンドウで読み込み直す', async () => {

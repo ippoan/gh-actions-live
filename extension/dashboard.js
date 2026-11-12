@@ -311,8 +311,7 @@ const bridge = createBridge({
   },
   onCommand: (msg) => {
     switch (msg.command) {
-      case 'refresh':  boot(); checkLatest(); break;
-      case 'check-update': checkLatest(); break;
+      case 'refresh':  boot(); break;
       case 'set-config': {
         const patch = configPatch(msg);
         chrome.storage.local.set(patch).then(() => { bridge.send({ type: 'ack', command: 'set-config', applied: patch }); boot(); });
@@ -361,29 +360,10 @@ async function sendStatus() {
     bridge: state.bridgeStatus });
 }
 
-/* ---------------- 版の表示 (自動更新は update.ps1 + background が行う) ---------------- */
-
-async function checkLatest() {
-  const running = chrome.runtime.getManifest().version;
-  const el = $('ver');
-  try {
-    const r = await fetch('https://github.com/ippoan/gh-actions-live/releases/latest/download/update.xml', { cache: 'no-store' });
-    const xml = new DOMParser().parseFromString(await r.text(), 'text/xml');
-    const latest = xml.querySelector('updatecheck')?.getAttribute('version');
-    const cmp = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i]||0) !== (y[i]||0)) return (x[i]||0) - (y[i]||0); } return 0; };
-    const btn = $('update');
-    if (latest && cmp(latest, running) > 0) {
-      el.textContent = `v${running} → v${latest} あり`; el.style.color = 'var(--run)';
-      el.title = '新版が Release に出ています。「更新」を押すと native host が update.ps1 を実行し、拡張が自分でリロードします (MSI で入れた端末のみ。zip 展開なら展開し直し)。';
-      btn.style.display = ''; btn.textContent = `v${latest} に更新`; btn.disabled = false;
-    } else { el.textContent = `v${running}`; el.style.color = 'var(--dim)'; btn.style.display = 'none'; }
-  } catch { el.textContent = `v${running}`; }
-}
-
 /* ---------------- 起動 ---------------- */
 
 async function boot() {
-  await applySeedConfig(log);   // インストーラーの config.json と repo の config.json を取り込む (変わったときだけ)
+  await applySeedConfig(log);   // extension/ の config.json と repo の config.json を取り込む (変わったときだけ)
   const { repos = [], remoteConfigStatus } = await chrome.storage.local.get(['repos', 'remoteConfigStatus']);
   state.repos = repos;
   state.remoteConfig = remoteConfigStatus;   // repo 未設定の画面で「共通設定が取れなかった理由」を出す
@@ -403,22 +383,8 @@ async function boot() {
 }
 
 $('opts').addEventListener('click', () => chrome.runtime.openOptionsPage());
-$('update').addEventListener('click', async () => {
-  const btn = $('update'); btn.disabled = true; btn.textContent = '更新中…';
-  const r = await chrome.runtime.sendMessage({ target: 'background', type: 'command', command: 'update' }).catch(e => ({ ok: false, error: String(e) }));
-  if (r?.ok && r.updated) { btn.textContent = `v${r.to} に更新 → リロード中…`; return; }   // background が reload する
-  btn.disabled = false;
-  if (r?.noHost) {
-    btn.textContent = '更新 (MSI 未導入)';
-    alert('native host が見つかりません。MSI で入れた端末でのみボタン更新が使えます。\nzip 展開で入れている場合は、新しい zip を同じフォルダに展開して拡張カードの ↻ を押してください。');
-  } else if (r?.ok) {
-    btn.textContent = '更新'; alert('ディスク上は最新でした (' + (r.to || '?') + ')。');
-  } else {
-    btn.textContent = '更新 (失敗)'; alert('更新に失敗: ' + (r?.error || r?.output || '不明'));
-  }
-});
 // 再読込 = 拡張ごと再起動する (ページ内の再取得ではなく)。background も含めて
-// 立ち上げ直し、ディスク上に新版があればそれも拾う。
+// 立ち上げ直し、作業ツリーの extension/ の変更もそれで拾う。
 // **ここで chrome.runtime.reload() を呼んではいけない** (#30): ページは死ぬのに
 // ウィンドウは残り、開き直しで空ウィンドウが 1 枚増える。background に頼むと
 // reloadSelf がこのタブを about:blank に差し替えてから reload し、後で **同じタブに**
@@ -431,8 +397,7 @@ $('reload').addEventListener('click', async () => {
 });
 chrome.storage.onChanged.addListener((c) => { if (c.repos) boot(); });
 
+$('ver').textContent = `v${chrome.runtime.getManifest().version}`;
 boot();
-checkLatest();
-setInterval(checkLatest, 5 * 60000);   // 30 分だと新版が出てもボタンがなかなか出ない (実機)
 setInterval(render, 5000);                 // 相対時刻の更新
 setInterval(() => { boot(); }, 20 * 60000); // 署名トークンは時限なので定期的に取り直す

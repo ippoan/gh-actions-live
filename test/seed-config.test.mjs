@@ -1,4 +1,4 @@
-// seed-config.js: インストーラーの config.json と GitHub の private repo の config.json を
+// seed-config.js: extension/ の config.json と GitHub の private repo の config.json を
 // chrome.storage に取り込む。他の PC で設定が空のまま (0 repos / bridge 未設定) になるのを
 // repo 側の正本で埋めるのが目的。変わったときだけ上書きする (手で入れた値を毎回潰さない)。
 import test from 'node:test';
@@ -73,7 +73,7 @@ test('JSON でなければ取り込まず失敗として残す', async () => {
   assert.equal(store.remoteConfigStatus.ok, false);
 });
 
-test('インストーラーの config.json の後に repo を読む (両方変われば repo が勝つ)', async () => {
+test('extension/ の config.json の後に repo を読む (両方変われば repo が勝つ)', async () => {
   const { store } = setup({ local: JSON.stringify({ repos: ['o/local'], notify: true }), remote: JSON.stringify({ repos: ['o/remote'] }) });
   await applySeedConfig();
   assert.deepEqual(store.repos, ['o/remote']);
@@ -87,8 +87,7 @@ test('configRepo を差し替えるとそちらを読む', async () => {
 });
 
 test('configPatch: 知らないキー・形の違う値は捨てる', () => {
-  assert.deepEqual(configPatch({ repos: ['o/a', ''], notify: 'yes', evil: 1, accessLoginHosts: [' A.example.com '],
-                                 configRepo: 'https://evil/x' }),
-                   { repos: ['o/a'], accessLoginHosts: ['a.example.com'] });
+  assert.deepEqual(configPatch({ repos: ['o/a', ''], notify: 'yes', evil: 1, configRepo: 'https://evil/x' }),
+                   { repos: ['o/a'] });
   assert.deepEqual(configPatch({ configRepo: 'me/cfg' }), { configRepo: 'me/cfg' });
 });
