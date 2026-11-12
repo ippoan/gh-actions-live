@@ -25,7 +25,11 @@ pub const TOOL: &str = "actions_dashboard";
 pub const DATA_TOOL: &str = "actions_dashboard_data";
 /// actions_dashboard の結果の `_meta` に載せるウィジェット用データのキー (dashboard.html と同じ)
 pub const META_KEY: &str = "gh-actions-live/dashboard";
-pub const VIEW_URI: &str = "ui://gh-actions-live/dashboard.html";
+/// ウィジェットの URI。HTML のハッシュを入れる: Claude のアプリはウィジェットを URI ごとにセッションを
+/// またいで使い回すので、URI が同じだと直した HTML が描かれない (#62。読み出しは来るのに古い版が出た)
+pub fn view_uri() -> String {
+    format!("ui://gh-actions-live/dashboard-{:07x}.html", view_hash())
+}
 /// MCP Apps の HTML リソースの mimeType (ext-apps の RESOURCE_MIME_TYPE と同値)
 pub const MIME: &str = "text/html;profile=mcp-app";
 const VIEW_HTML: &str = include_str!("../widget/dashboard.html");
@@ -39,9 +43,12 @@ const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-
 /// ウィジェットの版: bridge の版 + HTML の中身のハッシュ (先頭 7 桁)。見出しに出して、ホストが古い HTML を
 /// 使い回していないかを画面で見分ける (Claude のアプリはセッション中に読み直さない、#62)
 pub fn view_version() -> String {
-    // FNV-1a。HTML が変われば変わればよいので暗号的な強さは要らない
-    let h = VIEW_HTML.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
-    format!("v{}+{:07x}", env!("CARGO_PKG_VERSION"), h >> 36)
+    format!("v{}+{:07x}", env!("CARGO_PKG_VERSION"), view_hash())
+}
+
+/// HTML の中身のハッシュ (先頭 28 bit)。FNV-1a: HTML が変われば変わればよいので暗号的な強さは要らない
+fn view_hash() -> u64 {
+    VIEW_HTML.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3)) >> 36
 }
 
 pub fn view_html() -> String {
@@ -147,7 +154,7 @@ fn tool_defs() -> Value {
 データはログイン済みのブラウザ (gh-actions-live 拡張) が bridge に流したもので、GitHub の API は叩かない。ウィジェットは 5 秒ごとに更新される。",
             "inputSchema": repo_arg(),
             "annotations": { "readOnlyHint": true, "openWorldHint": false },
-            "_meta": { "ui": { "resourceUri": VIEW_URI }, "ui/resourceUri": VIEW_URI }
+            "_meta": { "ui": { "resourceUri": view_uri() }, "ui/resourceUri": view_uri() }
         },
         {
             "name": DATA_TOOL,
@@ -155,7 +162,7 @@ fn tool_defs() -> Value {
             "description": "actions_dashboard のウィジェットが更新に使う。repo ごとの run を JSON で返す (大きいのでモデルからは呼ばない)",
             "inputSchema": repo_arg(),
             "annotations": { "readOnlyHint": true, "openWorldHint": false },
-            "_meta": { "ui": { "resourceUri": VIEW_URI, "visibility": ["app"] } }
+            "_meta": { "ui": { "resourceUri": view_uri(), "visibility": ["app"] } }
         }
     ])
 }
@@ -203,16 +210,16 @@ pub fn handle(req: &Value, data: impl FnOnce(Option<&str>) -> Value) -> Option<V
             }
         }
         "resources/list" => ok(&id, json!({ "resources": [{
-            "uri": VIEW_URI, "name": "GitHub Actions dashboard view", "mimeType": MIME,
+            "uri": view_uri(), "name": "GitHub Actions dashboard view", "mimeType": MIME,
             "description": "actions_dashboard の結果を repo ごとの列で出すビュー"
         }] })),
         "resources/templates/list" => ok(&id, json!({ "resourceTemplates": [] })),
         "resources/read" => {
-            if params["uri"].as_str() != Some(VIEW_URI) {
+            if params["uri"].as_str() != Some(view_uri().as_str()) {
                 return Some(err(&id, -32002, format!("知らないリソース: {}", params["uri"])));
             }
             ok(&id, json!({ "contents": [{
-                "uri": VIEW_URI, "mimeType": MIME, "text": view_html(),
+                "uri": view_uri(), "mimeType": MIME, "text": view_html(),
                 "_meta": { "ui": { "prefersBorder": true } }
             }] }))
         }
@@ -288,7 +295,8 @@ mod tests {
         assert_eq!(call("initialize", json!({ "protocolVersion": "2025-03-26" }))["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(call("initialize", json!({ "protocolVersion": "1999-01-01" }))["result"]["protocolVersion"], LATEST_PROTOCOL);
         let tools = call("tools/list", json!({}));
-        assert_eq!(tools["result"]["tools"][0]["_meta"]["ui"]["resourceUri"], VIEW_URI);
+        assert_eq!(tools["result"]["tools"][0]["_meta"]["ui"]["resourceUri"], view_uri());
+        assert!(view_uri().starts_with("ui://gh-actions-live/dashboard-") && view_uri().ends_with(".html"));
         assert_eq!(tools["result"]["tools"][1]["_meta"]["ui"]["visibility"], json!(["app"]));
         let model = call("tools/call", json!({ "name": TOOL, "arguments": {} }));
         assert!(model["result"].get("structuredContent").is_none(), "モデル向けに JSON を渡さない");
@@ -296,7 +304,7 @@ mod tests {
         assert!(model["result"]["content"][0]["text"].as_str().unwrap().contains("repos"));
         assert!(call("tools/call", json!({ "name": DATA_TOOL, "arguments": {} }))["result"]["structuredContent"].is_object());
         assert_eq!(call("tools/call", json!({ "name": "nope" }))["error"]["code"], -32602);
-        let html = call("resources/read", json!({ "uri": VIEW_URI }));
+        let html = call("resources/read", json!({ "uri": view_uri() }));
         let text = html["result"]["contents"][0]["text"].as_str().unwrap();
         assert!(text.contains("ui/initialize") && !text.contains("https://cdn."), "外から何も読まない");
         assert!(text.contains(&view_version()) && !text.contains("__WIDGET_VERSION__"), "見出しに版を出す");

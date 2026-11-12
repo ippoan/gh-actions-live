@@ -292,7 +292,7 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   - 拡張 (ダッシュボード) が bridge から外れた / 戻ったときも 1 行出す (目隠しを黙らない)。bridge が落ちれば socket が閉じる
 - 一覧を見る (`POST /mcp`、#62): bridge は MCP (Streamable HTTP の stateless JSON) も話す。ツール
   `actions_dashboard` (引数 `repo` は repo 名の部分一致) が、拡張のダッシュボードと同じ見た目のウィジェット
-  (MCP Apps、`ui://gh-actions-live/dashboard.html`) を Claude の会話の中に出す。ウィジェットは 5 秒ごとに
+  (MCP Apps、`ui://gh-actions-live/dashboard-<HTML のハッシュ>.html`。アプリはウィジェットを URI ごとに使い回すので、HTML が変わると URI も変える) を Claude の会話の中に出す。ウィジェットは 5 秒ごとに
   ホスト経由でツールを呼び直して bridge の写しを読む (**GitHub の API は叩かない**。データは今までどおり
   ログイン済みのブラウザが流したもの)。モデルには実行中と workflow ごとの最新が赤の run だけを要約で返す。
   ウィジェットが取りに行くのはビュー専用のツール `actions_dashboard_data` (`_meta.ui.visibility: ["app"]`)。
