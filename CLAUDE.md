@@ -48,6 +48,10 @@ Chrome 拡張 (`extension/`。Linux の headless Chromium = `linux-browser/` が
   全 repo の変化がそのセッションにだけ流れた。セッションは `ws /watch?repo=…&run=…` に繋いで絞る。
   拡張側のプロトコル (`/?role=extension`、`{"type":"ping"}` の keepalive、`POST /cmd`) は Node 版と同じに保つ
   (変えると拡張の更新が要る)。/watch への keepalive は Ping フレーム (テキストにすると通知になる)
+- **ログイン切れは拡張の `{type:"login", loggedIn, user}` で bridge に知らせる。** 判定は `extension/login-state.js` (純粋)。
+  boot 1 周で読めた Actions ページと 404 の本文 (未ログインだと private repo は 404) の `meta[name=user-login]` を見て、
+  変わったときと bridge へ繋ぎ直した直後 (hello の後) に送る。bridge は `logged_in` が変わったときだけ /watch に 1 行
+  (起動直後の初回 true は流さない)。`login` を送らない古い拡張では None のまま何も起きない
 - **bridge の `POST /mcp` (#62) は一覧のウィジェット専用の読み取り口。** 判定と整形は `bridge/src/mcp.rs` の純粋関数
   (`dashboard` / `summary` / `handle`) に置き、`lib.rs` は Hub の写しを渡すだけ。ウィジェット (`bridge/widget/dashboard.html`) は
   Windows のデスクトップアプリの iframe に出るので Linux の bridge へ直接 ws を張らない (5 秒ごとの `callServerTool`)。

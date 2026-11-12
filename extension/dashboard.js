@@ -12,6 +12,7 @@ import { createAliveWatchdog } from './alive-watchdog.js';
 import { GH, parseRow, actionsPath, decodeChannel, runsFromEmbedded } from './run-row.js';
 import { runTime, sortReposByRecent } from './repo-order.js';
 import { replaceRepoChannels, mergeRepoChannels, dropReposNotIn, allTokens, repoForTopic } from './channel-store.js';
+import { loginVerdict, createLoginTracker } from './login-state.js';
 
 const parser = new DOMParser();
 const $ = id => document.getElementById(id);
@@ -46,7 +47,13 @@ async function fetchDoc(path, { partial = false } = {}) {
   const headers = { 'Accept': 'text/html' };
   if (partial) headers['X-Requested-With'] = 'XMLHttpRequest';
   const r = await fetch(GH + path, { credentials: 'include', headers });
-  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
+  if (!r.ok) {
+    const e = new Error(`${path} -> ${r.status}`);
+    // 未ログインだと private repo の Actions ページは 404。404 の本文も GitHub の HTML で
+    // meta[name=user-login] を持つので、ログイン判定 (boot) の材料として載せる
+    if (r.status === 404) e.doc = parser.parseFromString(await r.text(), 'text/html');
+    throw e;
+  }
   return parser.parseFromString(await r.text(), 'text/html');
 }
 
@@ -75,8 +82,10 @@ function apply(repo, r) {
 }
 
 // Actions ページ = スナップショット。全 run が畳まれずに入っている。
-async function loadRepo(repo) {
+// docs を渡すと読めた doc を積む (boot のログイン判定用)
+async function loadRepo(repo, docs) {
   const doc = await fetchDoc(actionsPath(repo));
+  docs?.push(doc);
   const link = doc.querySelector('link[rel="shared-web-socket"]');
   if (link) { state.socketUrl = link.getAttribute('href'); state.socketNote = ''; }
   else {
@@ -293,6 +302,8 @@ const snapshot = () => [...state.runs.values()].map(r => ({
   title: r.title, href: r.href, runId: r.runId, by: r.by, at: r.at, duration: r.duration
 }));
 
+const login = createLoginTracker();   // boot ごとのログイン判定。変わったときだけ bridge へ送る
+
 const bridge = createBridge({
   role: 'extension',
   getUrl: async () => (await chrome.storage.local.get('bridgeUrl')).bridgeUrl || '',
@@ -307,6 +318,9 @@ const bridge = createBridge({
     if (st === 'open') {
       bridge.send({ type: 'hello', role: 'extension', repos: state.repos, version: chrome.runtime.getManifest().version });
       bridge.send({ type: 'snapshot', runs: snapshot() });
+      // bridge の再起動で状態が消えるので、分かっているログイン状態を送り直す
+      const l = login.last();
+      if (l) bridge.send({ type: 'login', ...l });
     }
   },
   onCommand: (msg) => {
@@ -373,9 +387,17 @@ async function boot() {
   bridge.ensure();
   if (!repos.length) { render(); return; }
 
+  // ログイン判定の材料: 読めた doc と 404 の本文だけ (ネットワーク失敗や 404 以外の非 2xx は入れない)
+  const docs = [];
   for (const repo of repos) {
-    try { announce(await loadRepo(repo)); }
-    catch (e) { log('loadRepo failed', repo, String(e)); }
+    try { announce(await loadRepo(repo, docs)); }
+    catch (e) { if (e.doc) docs.push(e.doc); log('loadRepo failed', repo, String(e)); }
+  }
+  const verdict = loginVerdict(docs);
+  const changed = verdict && login.observe(verdict.user);
+  if (changed) {
+    log(changed.loggedIn ? `GitHub にログイン済み (${changed.user})` : 'GitHub のログインが切れている');
+    bridge.send({ type: 'login', ...changed });
   }
   render();
   alive.onBoot();    // 未接続なら無条件で close → connect (CONNECTING で固まった relay もここで叩き直す)

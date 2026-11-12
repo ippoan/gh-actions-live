@@ -67,7 +67,12 @@ struct Hub {
     runs: HashMap<String, Value>,
     /// `/mcp/<合言葉>` の合言葉。None ならその口は閉じている
     mcp_token: Option<String>,
+    /// 拡張が `{type:"login"}` で知らせた GitHub のログイン状態。None = 未知 (古い拡張は送らない)
+    logged_in: Option<bool>,
 }
+
+/// GitHub のログインが切れた行。変化したときと、切れている間に繋いだ /watch へ流す
+const LOGIN_LOST: &str = "watch: GitHub のログインが切れた — run の変化が届かない。linux-browser/github-login.sh で入れ直す";
 
 type Shared = Arc<Mutex<Hub>>;
 
@@ -133,6 +138,9 @@ impl Hub {
                     // 黙っていると「まだ走っている」と区別がつかない
                     let _ = tx.send(text("watch: 拡張 (ダッシュボード) が bridge に繋がっていない — 繋がるまで変化は届かない"));
                 }
+                if self.logged_in == Some(false) {
+                    let _ = tx.send(text(LOGIN_LOST));
+                }
                 self.watchers.insert(id, Watcher { query, watch, tx });
             }
             return id;
@@ -177,6 +185,19 @@ impl Hub {
                 }
             }
             "pong" => {}
+            "login" => {
+                if let Some(now) = msg["loggedIn"].as_bool() {
+                    let prev = self.logged_in.replace(now);
+                    eprintln!("[bridge] extension login: {now} {}", field(msg, "user"));
+                    match (prev, now) {
+                        (Some(p), _) if p == now => {}
+                        (_, false) => self.notify_watchers(LOGIN_LOST),
+                        // 起動直後の初回 (None → true) は流さない
+                        (Some(false), true) => self.notify_watchers(&format!("watch: GitHub のログインが戻った ({})", field(msg, "user"))),
+                        _ => {}
+                    }
+                }
+            }
             "events" => {
                 for e in msg["events"].as_array().into_iter().flatten() {
                     println!("{}", fmt_line(e, &field(e, "from"), &field(e, "label")));
@@ -240,7 +261,7 @@ impl Hub {
             })
             .collect();
         let watchers: Vec<&str> = self.watchers.values().map(|w| w.query.as_str()).collect();
-        json!({ "ok": true, "port": self.port, "clients": clients, "watchers": watchers })
+        json!({ "ok": true, "port": self.port, "clients": clients, "watchers": watchers, "loggedIn": self.logged_in })
     }
 }
 
@@ -273,6 +294,7 @@ fn build(port: u16, every: Duration, mcp_token: Option<String>) -> Router {
         watchers: HashMap::new(),
         runs: HashMap::new(),
         mcp_token,
+        logged_in: None,
     }));
     tokio::spawn(keepalive(hub.clone()));
     tokio::spawn(auto_refresh(hub.clone(), every));

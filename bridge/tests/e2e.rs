@@ -126,6 +126,47 @@ async fn watch_says_when_dashboard_is_missing_and_cmd_reaches_extension() {
 }
 
 #[tokio::test]
+async fn watch_says_when_github_login_is_lost_and_back() {
+    let port = start().await;
+    let mut ext = connect(port, "/?role=extension").await;
+    let mut w = connect(port, "/watch?repo=ippoan/x").await;
+
+    // 起動直後の初回 login true では行を出さない
+    send(&mut ext, json!({ "type": "login", "loggedIn": true, "user": "octocat" })).await;
+    assert!(next_text_within(&mut w, Duration::from_millis(300)).await.is_err(), "初回 true では流さない");
+
+    send(&mut ext, json!({ "type": "login", "loggedIn": false, "user": null })).await;
+    assert!(next_text(&mut w).await.unwrap().contains("ログインが切れた"));
+
+    // 同じ値の連投では行が増えない
+    send(&mut ext, json!({ "type": "login", "loggedIn": false, "user": null })).await;
+    assert!(next_text_within(&mut w, Duration::from_millis(300)).await.is_err(), "同じ値では流さない");
+
+    // 切れている間に繋いだ /watch にも切れた行を 1 回送る
+    let mut w2 = connect(port, "/watch?repo=ippoan/y").await;
+    assert!(next_text(&mut w2).await.unwrap().contains("ログインが切れた"));
+
+    let (_, body) = http(port, "GET", "/", "").await;
+    assert!(body.contains(r#""loggedIn":false"#), "{body}");
+
+    send(&mut ext, json!({ "type": "login", "loggedIn": true, "user": "octocat" })).await;
+    assert_eq!(next_text(&mut w).await.unwrap(), "watch: GitHub のログインが戻った (octocat)");
+    assert!(next_text(&mut w2).await.unwrap().contains("戻った"));
+    send(&mut ext, json!({ "type": "login", "loggedIn": true, "user": "octocat" })).await;
+    assert!(next_text_within(&mut w, Duration::from_millis(300)).await.is_err(), "同じ値では流さない");
+}
+
+#[tokio::test]
+async fn first_login_true_is_silent_for_new_watchers() {
+    let port = start().await;
+    let mut ext = connect(port, "/?role=extension").await;
+    send(&mut ext, json!({ "type": "login", "loggedIn": true, "user": "octocat" })).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut w = connect(port, "/watch?repo=ippoan/x").await;
+    assert!(next_text_within(&mut w, Duration::from_millis(300)).await.is_err(), "ログイン済みなら繋いだ直後に何も来ない");
+}
+
+#[tokio::test]
 async fn auto_refresh_reaches_dashboard() {
     let port = start_with_refresh(Duration::from_millis(200)).await;
     let mut ext = connect(port, "/?role=extension").await;
