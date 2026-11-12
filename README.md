@@ -263,6 +263,17 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
     run 番号は workflow ごとなので `workflow` と併用する。re-run は同じ番号で走り直すので、閉じた後に re-run したら繋ぎ直す
   - `ref` は完全一致 (拡張が 40 文字で切るので長い branch 名は先頭 40 文字で比べる)。`ref` だけの見張りは閉じない
   - 拡張 (ダッシュボード) が bridge から外れた / 戻ったときも 1 行出す (目隠しを黙らない)。bridge が落ちれば socket が閉じる
+- 一覧を見る (`POST /mcp`、#62): bridge は MCP (Streamable HTTP の stateless JSON) も話す。ツール
+  `actions_dashboard` (引数 `repo` は repo 名の部分一致) が、拡張のダッシュボードと同じ見た目のウィジェット
+  (MCP Apps、`ui://gh-actions-live/dashboard.html`) を Claude の会話の中に出す。ウィジェットは 5 秒ごとに
+  ホスト経由でツールを呼び直して bridge の写しを読む (**GitHub の API は叩かない**。データは今までどおり
+  ログイン済みのブラウザが流したもの)。モデルには実行中と workflow ごとの最新が赤の run だけを要約で返す。
+  読み取り専用 (書き込みの口は無い)。登録は user scope で 1 回:
+  ```
+  claude mcp add --transport http --scope user gh-actions-live http://127.0.0.1:8799/mcp
+  ```
+  bridge を入れ替える (`cargo install --locked --path bridge` → `systemctl --user restart gh-actions-bridge`) と
+  全セッションの `/watch` が数秒切れるので、入れ替えと登録はユーザーの承認を取ってから
 - 生の JSON が欲しい購読者は `/?role=listener` (繋いだ時点で bridge の写しを snapshot として 1 回受ける。送った JSON は拡張へのコマンド)
 - Linux → 拡張 (設定): `curl -X POST localhost:8799/cmd -d '{"command":"set-config","repos":["owner/repo"],"notify":false}'`
   で repo を変えられる。`get-config` で現在値を返す。**repos は全セッション共通**なので、

@@ -7,6 +7,7 @@
 //! - `ws /watch?repo=…&run=…`  条件に合う run の変化だけを 1 フレーム 1 行のテキストで受ける
 //!   (Claude Code の Monitor の ws ソースにそのまま渡す。絞り込みは [`watch`])
 //! - `POST /cmd`               本文の JSON を拡張へのコマンドとして送る
+//! - `POST /mcp`               MCP (Streamable HTTP の stateless JSON)。全 repo の run をウィジェットで見せる ([`mcp`])
 //! - `GET /`                   接続中のクライアント一覧
 //!
 //! セッションから独立して 1 本だけ常駐させる (systemd --user)。セッションが Monitor で bridge 自体を
@@ -18,6 +19,7 @@
 //! bridge は 5 分ごとにダッシュボードへ `refresh` を送る。alive socket が黙って変化を
 //! 取りこぼしたときに Actions ページを取り直させるため。
 
+pub mod mcp;
 pub mod watch;
 
 use std::collections::HashMap;
@@ -206,6 +208,19 @@ impl Hub {
         self.send_role(|r| r == "listener", msg); // 生のまま listener へ
     }
 
+    /// `/mcp` の actions_dashboard に渡す形。repo の並びはダッシュボードが hello で送った設定の順
+    fn dashboard(&self, filter: Option<&str>) -> Value {
+        let mut order: Vec<String> = Vec::new();
+        for c in self.clients.values().filter(|c| c.role == "extension") {
+            for r in &c.repos {
+                if !order.contains(r) {
+                    order.push(r.clone());
+                }
+            }
+        }
+        mcp::dashboard(&order, &self.runs, self.has_dashboard(), filter)
+    }
+
     fn status(&self) -> Value {
         let clients: Vec<String> = self
             .clients
@@ -241,6 +256,7 @@ pub fn app_with_refresh(port: u16, every: Duration) -> Router {
         .route("/", get(root))
         .route("/watch", get(watch_ws))
         .route("/cmd", post(cmd))
+        .route("/mcp", post(mcp_post).get(method_not_allowed).delete(method_not_allowed))
         .layer(middleware::from_fn(cors))
         .with_state(hub)
 }
@@ -285,6 +301,31 @@ async fn cmd(State(hub): State<Shared>, body: String) -> Response {
     let n = hub.lock().unwrap().send_role(is_ext, &Value::Object(payload));
     eprintln!("[bridge] cmd {name} -> {n} extension(s)");
     Json(json!({ "ok": true, "delivered_to": n })).into_response()
+}
+
+// 1 リクエスト = JSON-RPC 1 通 (配列ならバッチ)。応答が無い (通知だけ) なら 202
+async fn mcp_post(State(hub): State<Shared>, body: String) -> Response {
+    let Ok(req) = serde_json::from_str::<Value>(&body) else {
+        let e = json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "parse error" } });
+        return (StatusCode::BAD_REQUEST, Json(e)).into_response();
+    };
+    let one = |r: &Value| mcp::handle(r, |filter| hub.lock().unwrap().dashboard(filter));
+    let res = match &req {
+        Value::Array(list) => {
+            let out: Vec<Value> = list.iter().filter_map(one).collect();
+            if out.is_empty() { None } else { Some(Value::Array(out)) }
+        }
+        r => one(r),
+    };
+    match res {
+        Some(v) => Json(v).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
+    }
+}
+
+// SSE の口も session も持たない (stateless)
+async fn method_not_allowed() -> StatusCode {
+    StatusCode::METHOD_NOT_ALLOWED
 }
 
 async fn serve(socket: WebSocket, hub: Shared, role: String, remote: String, watch: Option<(String, Watch)>) {

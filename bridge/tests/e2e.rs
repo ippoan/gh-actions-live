@@ -148,3 +148,45 @@ async fn auto_refresh_skips_the_immediate_tick() {
     let got = next_text_within(&mut ext, Duration::from_millis(100)).await;
     assert!(got.is_err(), "起動直後 (100ms 以内) には refresh が来ないはず: {got:?}");
 }
+
+/// HTTP/1.1 を素で 1 往復する (dev-dependencies に HTTP クライアントを足さないため)。(ステータス行, 本文)
+async fn http(port: u16, method: &str, path: &str, body: &str) -> (String, String) {
+    let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    tcp.write_all(req.as_bytes()).await.unwrap();
+    let mut res = String::new();
+    tcp.read_to_string(&mut res).await.unwrap();
+    let (head, body) = res.split_once("\r\n\r\n").unwrap_or((&res, ""));
+    (head.lines().next().unwrap_or("").to_string(), body.to_string())
+}
+
+#[tokio::test]
+async fn mcp_tool_returns_runs_the_extension_sent() {
+    let port = start().await;
+    let mut ext = connect(port, "/?role=extension").await;
+    send(&mut ext, json!({ "type": "hello", "role": "extension", "repos": ["ippoan/empty", "ippoan/x"], "version": "0.0.0" })).await;
+    send(&mut ext, json!({ "type": "snapshot", "runs": [
+        { "repo": "ippoan/x", "workflow": "CI", "run": "10", "status": "currently running", "ref": "feat-a", "title": "t",
+          "href": "https://github.com/ippoan/x/actions/runs/1", "at": "2026-11-12T00:00:00Z" },
+    ] }))
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let (status, body) = http(port, "POST", "/mcp", r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"actions_dashboard","arguments":{}}}"#).await;
+    assert!(status.contains("200"), "{status}");
+    let res: Value = serde_json::from_str(&body).unwrap();
+    let d = &res["result"]["structuredContent"];
+    assert_eq!(d["connected"], true);
+    assert_eq!(d["repos"][0]["repo"], "ippoan/x");
+    assert_eq!(d["repos"][0]["runs"][0]["state"], "run");
+    assert_eq!(d["repos"][1]["repo"], "ippoan/empty", "hello の repo は run が無くても末尾に出る");
+    assert!(res["result"]["content"][0]["text"].as_str().unwrap().contains("ippoan/x CI #10: currently running"));
+
+    // 通知だけなら 202、壊れた JSON は 400、GET は 405 (SSE は持たない)
+    assert!(http(port, "POST", "/mcp", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).await.0.contains("202"));
+    assert!(http(port, "POST", "/mcp", "{").await.0.contains("400"));
+    assert!(http(port, "GET", "/mcp", "").await.0.contains("405"));
+}

@@ -59,6 +59,11 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   全 repo の変化がそのセッションにだけ流れた。セッションは `ws /watch?repo=…&run=…` に繋いで絞る。
   拡張側のプロトコル (`/?role=extension`、`{"type":"ping"}` の keepalive、`POST /cmd`) は Node 版と同じに保つ
   (変えると拡張の更新が要る)。/watch への keepalive は Ping フレーム (テキストにすると通知になる)
+- **bridge の `POST /mcp` (#62) は一覧のウィジェット専用の読み取り口。** 判定と整形は `bridge/src/mcp.rs` の純粋関数
+  (`dashboard` / `summary` / `handle`) に置き、`lib.rs` は Hub の写しを渡すだけ。ウィジェット (`bridge/widget/dashboard.html`) は
+  Windows のデスクトップアプリの iframe に出るので Linux の bridge へ直接 ws を張らない (5 秒ごとの `callServerTool`)。
+  見た目と並びは `extension/dashboard.js` の `card()` / `render()` / `MAX_CARDS_PER_REPO` と揃える (片方だけ変えない)。
+  **GitHub の API を叩く経路を足さない** (レート制限を避けるためブラウザから取る、がユーザーの決定)
 - **設定の正本は private repo `ippoan/gh-actions-live-config` の `config.json`** (`seed-config.js` が github.com の cookie で raw を読む)。
   取り込みは**内容ハッシュが変わったときだけ** (毎回上書きすると設定画面 / `set-config` の値が 10 分で戻る)。
   書いたキーだけ上書きするので、`accessLoginHosts: []` のような空値を置くと全 PC の値を消す。
