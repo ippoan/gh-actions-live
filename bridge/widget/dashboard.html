@@ -6,7 +6,9 @@
 <title>GitHub Alive Watch</title>
 <!-- bridge の /mcp が返す MCP Apps のビュー (Refs #62)。見た目は extension/dashboard.html と揃える。
      データはビュー専用のツール actions_dashboard_data の structuredContent。モデル向けの actions_dashboard は
-     要約のテキストしか返さない (structuredContent がモデルに渡って 9 万字になるため)。5 秒ごとにホスト経由で tools/call し直す
+     要約のテキストしか返さない (structuredContent がモデルに渡って 9 万字になるため)。5 秒ごとにホスト経由で取り直す:
+     ホストが serverTools を出せば tools/call、serverResources だけなら resources/read でデータ用リソース
+     (gh-actions-live://dashboard、だめなら ui://gh-actions-live/data) を読む
      (iframe は Windows 側に出るので Linux の bridge へ直接は繋がない)。 -->
 <style>
   :root {
@@ -126,6 +128,7 @@ const app = (() => {
       return (r && r.hostContext) || {};
     },
     callServerTool: p => request("tools/call", p),
+    readServerResource: p => request("resources/read", p),
     openLink: p => request("ui/open-link", p),
   };
 })();
@@ -200,6 +203,13 @@ function showErr(m) { $("err").hidden = !m; $("err").textContent = m; }
 // ホストによってはウィジェットからの tools/call を受けない (Claude Code は "Method not found")。
 // そのときは表示をツールの結果 (_meta) のままにし、経過時間だけ数え上げる
 let canPoll = true;
+const NO_POLL = "このホストではウィジェットから更新できない — 最新はもう一度 actions_dashboard を呼ぶ";
+// 更新の経路: ホストが serverTools を出せば "tools"、serverResources だけなら "resources"、どちらも無ければ "none"
+let mode = null;
+const DATA_URIS = ["gh-actions-live://dashboard", "ui://gh-actions-live/data"];
+let dataUri = null;  // resources/read で読めた方 (以後これを使い続ける)
+// ホスト診断: 最初の resources/read の結果 (試していない方は null)
+let firstRead = null;
 // ホスト診断: ui/initialize の応答と最初の tools/call の結果 (ホストが serverTools を申告しているか等の実物確認)
 let firstCall = null;
 function showDiag() {
@@ -209,11 +219,43 @@ function showDiag() {
     protocolVersion: r.protocolVersion ?? null, hostInfo: r.hostInfo ?? null, hostCapabilities: r.hostCapabilities ?? null,
     hostContext: { toolInfo: pick("toolInfo"), displayMode: pick("displayMode"), availableDisplayModes: pick("availableDisplayModes"),
                    platform: pick("platform"), userAgent: pick("userAgent") },
-    firstCall,
+    firstCall, mode, firstRead,
   }, null, 2);
 }
+function stopPolling() {
+  canPoll = false; note = NO_POLL;
+  if (data) { showErr(""); render(); } else showErr(NO_POLL);
+}
+async function readData() {
+  const q = ["repo", "since"].filter(k => args[k]).map(k => `${k}=${encodeURIComponent(args[k])}`).join("&");
+  const tries = dataUri ? [dataUri] : DATA_URIS;
+  const rec = { custom: null, ui: null };
+  for (const base of tries) {
+    try {
+      const r = await app.readServerResource({ uri: q ? `${base}?${q}` : base });
+      const text = r && r.contents && r.contents[0] && r.contents[0].text;
+      if (typeof text !== "string") throw new Error("contents[0].text が無い");
+      rec[base === DATA_URIS[0] ? "custom" : "ui"] = "ok";
+      dataUri = base;
+      return { rec, result: { content: [{ type: "text", text }] } };
+    } catch (e) {
+      rec[base === DATA_URIS[0] ? "custom" : "ui"] = { code: (e && e.code) ?? null, message: String(e && e.message || e) };
+    }
+  }
+  return { rec, result: null };
+}
 async function poll() {
+  if (!mode) return;
   if (!canPoll) { render(); return; }
+  if (mode === "none") { stopPolling(); return; }
+  if (mode === "resources") {
+    const { rec, result } = await readData();
+    if (!firstRead) { firstRead = rec; showDiag(); }
+    if (result) take(result);
+    else if (!dataUri) stopPolling();
+    else showErr("更新に失敗: " + JSON.stringify(rec));
+    return;
+  }
   try {
     const r = await app.callServerTool({ name: TOOL, arguments: args });
     if (!firstCall) { firstCall = "ok"; showDiag(); }
@@ -222,7 +264,7 @@ async function poll() {
   catch (e) {
     if (!firstCall) { firstCall = { code: (e && e.code) ?? null, message: String(e && e.message || e) }; showDiag(); }
     const m = String(e && e.message || e);
-    if (/method not found/i.test(m) && data) { canPoll = false; showErr(""); note = "このホストではウィジェットから更新できない — 最新はもう一度 actions_dashboard を呼ぶ"; render(); return; }
+    if (/method not found/i.test(m) && data) { stopPolling(); return; }
     showErr("更新に失敗: " + m);
   }
 }
@@ -249,7 +291,11 @@ app.on("ui/notifications/tool-input", p => { args = p.arguments || {}; });
 app.on("ui/notifications/tool-result", r => { if (parse(r)) take(r); else poll(); });
 app.on("ui/notifications/host-context-changed", applyHost);
 
-app.connect().then(ctx => { applyHost(ctx); showDiag(); poll(); }).catch(e => showErr("ホストに繋がらない: " + (e && e.message || e)));
+app.connect().then(ctx => {
+  const caps = (initResult && initResult.hostCapabilities) || {};
+  mode = caps.serverTools ? "tools" : caps.serverResources ? "resources" : "none";
+  applyHost(ctx); showDiag(); poll();
+}).catch(e => showErr("ホストに繋がらない: " + (e && e.message || e)));
 setInterval(poll, POLL_MS);
 </script>
 </body>

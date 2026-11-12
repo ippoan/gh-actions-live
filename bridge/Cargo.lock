@@ -201,6 +201,7 @@ name = "gh-actions-bridge"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "form_urlencoded",
  "futures-util",
  "serde_json",
  "tokio",
