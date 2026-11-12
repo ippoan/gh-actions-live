@@ -218,7 +218,7 @@ impl Hub {
     }
 
     /// `/mcp` の actions_dashboard に渡す形。repo の並びはダッシュボードが hello で送った設定の順
-    fn dashboard(&self, filter: Option<&str>) -> Value {
+    fn dashboard(&self, q: &mcp::Query) -> Value {
         let mut order: Vec<String> = Vec::new();
         for c in self.clients.values().filter(|c| c.role == "extension") {
             for r in &c.repos {
@@ -227,7 +227,7 @@ impl Hub {
                 }
             }
         }
-        mcp::dashboard(&order, &self.runs, self.has_dashboard(), filter)
+        mcp::dashboard(&order, &self.runs, self.has_dashboard(), q)
     }
 
     fn status(&self) -> Value {
@@ -338,7 +338,7 @@ async fn mcp_post(State(hub): State<Shared>, body: String) -> Response {
     let one = |r: &Value| {
         let name = r["params"]["name"].as_str().or(r["params"]["uri"].as_str()).unwrap_or("");
         eprintln!("[bridge] mcp {} {name}", r["method"].as_str().unwrap_or("?"));
-        mcp::handle(r, |filter| hub.lock().unwrap().dashboard(filter))
+        mcp::handle(r, |q| hub.lock().unwrap().dashboard(q))
     };
     let res = match &req {
         Value::Array(list) => {

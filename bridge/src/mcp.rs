@@ -74,9 +74,24 @@ fn run_time(r: &Value) -> String {
     if at.is_empty() { field(r, "seenAt") } else { at }
 }
 
+/// ツールの引数のうち絞り込み。`repo`: repo 名 (完全一致か `owner/` を省いた名前の一致を優先し、無ければ部分一致)。
+/// `since`: この時刻 (ISO 8601、UTC の `Z` 付き) 以降に始まった run だけ。PR を出した repo をその時刻から見る用
+#[derive(Default)]
+pub struct Query<'a> {
+    pub repo: Option<&'a str>,
+    pub since: Option<&'a str>,
+}
+
+impl<'a> Query<'a> {
+    pub fn from_args(args: &'a Value) -> Self {
+        let get = |k: &str| args[k].as_str().map(str::trim).filter(|s| !s.is_empty());
+        Self { repo: get("repo"), since: get("since") }
+    }
+}
+
 /// ビューに渡す形。repo ごとに 実行中 → 新しい順 で並べ、上限で切る。
 /// repo の並びは直近に run が動いた順 (run の無い repo は末尾、同時刻は `order` の順)
-pub fn dashboard(order: &[String], runs: &HashMap<String, Value>, connected: bool, filter: Option<&str>) -> Value {
+pub fn dashboard(order: &[String], runs: &HashMap<String, Value>, connected: bool, q: &Query) -> Value {
     let mut by_repo: Vec<(String, Vec<&Value>)> = order.iter().map(|r| (r.clone(), Vec::new())).collect();
     for r in runs.values() {
         let repo = field(r, "repo");
@@ -85,8 +100,20 @@ pub fn dashboard(order: &[String], runs: &HashMap<String, Value>, connected: boo
             None => by_repo.push((repo, vec![r])),
         }
     }
-    if let Some(f) = filter.map(str::to_lowercase).filter(|f| !f.is_empty()) {
-        by_repo.retain(|(name, _)| name.to_lowercase().contains(&f));
+    if let Some(f) = q.repo.map(str::to_lowercase) {
+        let exact = |name: &str| { let n = name.to_lowercase(); n == f || n.rsplit('/').next() == Some(f.as_str()) };
+        if by_repo.iter().any(|(name, _)| exact(name)) {
+            by_repo.retain(|(name, _)| exact(name));
+        } else {
+            by_repo.retain(|(name, _)| name.to_lowercase().contains(&f));
+        }
+    }
+    if let Some(since) = q.since {
+        // 時刻は ISO 8601 の文字列なので文字列で比べる。その時刻以降の run が無い repo は出さない
+        for (_, list) in by_repo.iter_mut() {
+            list.retain(|r| run_time(r).as_str() >= since);
+        }
+        by_repo.retain(|(_, list)| !list.is_empty());
     }
     let latest = |list: &Vec<&Value>| list.iter().map(|r| run_time(r)).max().unwrap_or_default();
     by_repo.sort_by_cached_key(|(_, list)| Reverse(latest(list))); // 安定ソート: 同時刻は元の順
@@ -139,7 +166,10 @@ pub fn summary(d: &Value) -> String {
 fn repo_arg() -> Value {
     json!({
         "type": "object",
-        "properties": { "repo": { "type": "string", "description": "repo 名の部分一致で絞る (例: alc-app)。省略すると全 repo" } },
+        "properties": {
+            "repo": { "type": "string", "description": "repo で絞る (例: alc-app か ippoan/alc-app)。完全一致があればそれだけ、無ければ部分一致。省略すると全 repo" },
+            "since": { "type": "string", "description": "この時刻以降に始まった run だけ (ISO 8601、UTC の Z 付き。例: 2026-11-12T13:00:00Z)。PR を出した repo をその時刻から見るときに repo と一緒に渡す" }
+        },
         "additionalProperties": false
     })
 }
@@ -176,7 +206,7 @@ fn err(id: &Value, code: i64, message: impl Into<String>) -> Value {
 }
 
 /// JSON-RPC 1 通を処理する。通知 (id 無し) は None。`data` はツールが呼ばれたときだけ評価する
-pub fn handle(req: &Value, data: impl FnOnce(Option<&str>) -> Value) -> Option<Value> {
+pub fn handle(req: &Value, data: impl FnOnce(&Query) -> Value) -> Option<Value> {
     let id = req.get("id")?.clone();
     let params = &req["params"];
     let res = match req["method"].as_str().unwrap_or("") {
@@ -193,17 +223,17 @@ pub fn handle(req: &Value, data: impl FnOnce(Option<&str>) -> Value) -> Option<V
         "ping" => ok(&id, json!({})),
         "tools/list" => ok(&id, json!({ "tools": tool_defs() })),
         "tools/call" => {
-            let filter = params["arguments"]["repo"].as_str();
+            let q = Query::from_args(&params["arguments"]);
             match params["name"].as_str() {
                 // モデル向け: 要約だけ (structuredContent を付けるとそちらがモデルに渡る)
                 // ウィジェットには _meta で同じデータを渡す (_meta はモデルに渡らない)。Claude Code のホストは
                 // ウィジェットからの tools/call を受けない ("Method not found") ので、表示はこの結果だけで描く
                 Some(TOOL) => {
-                    let d = data(filter);
+                    let d = data(&q);
                     ok(&id, json!({ "content": [{ "type": "text", "text": summary(&d) }], "_meta": { META_KEY: d } }))
                 }
                 Some(DATA_TOOL) => {
-                    let d = data(filter);
+                    let d = data(&q);
                     ok(&id, json!({ "content": [{ "type": "text", "text": summary(&d) }], "structuredContent": d }))
                 }
                 _ => return Some(err(&id, -32602, format!("知らないツール: {}", params["name"]))),
@@ -259,7 +289,7 @@ mod tests {
     #[test]
     fn repos_by_recent_runs_active_first_and_empty_repos_last() {
         let order = vec!["o/empty".to_string(), "o/a".to_string(), "o/b".to_string()];
-        let d = dashboard(&order, &runs(), true, None);
+        let d = dashboard(&order, &runs(), true, &Query::default());
         let names: Vec<_> = d["repos"].as_array().unwrap().iter().map(|r| field(r, "repo")).collect();
         assert_eq!(names, ["o/b", "o/a", "o/empty"]);
         let b = &d["repos"][0];
@@ -274,15 +304,32 @@ mod tests {
         let many: HashMap<String, Value> = (0..20)
             .map(|i| (i.to_string(), json!({ "repo": "o/a", "workflow": "CI", "run": i.to_string(), "status": "completed successfully", "at": format!("2026-11-12T00:{i:02}:00Z") })))
             .collect();
-        let d = dashboard(&[], &many, true, None);
+        let d = dashboard(&[], &many, true, &Query::default());
         assert_eq!(d["repos"][0]["runs"].as_array().unwrap().len(), MAX_RUNS_PER_REPO);
         assert_eq!(d["repos"][0]["total"], 20);
-        assert_eq!(dashboard(&[], &runs(), true, Some("B"))["repos"].as_array().unwrap().len(), 1);
+        assert_eq!(dashboard(&[], &runs(), true, &Query { repo: Some("B"), since: None })["repos"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn repo_prefers_exact_match_and_since_drops_older_runs() {
+        let mut rs = runs();
+        rs.insert("x".into(), json!({ "repo": "o/a-s3", "workflow": "CI", "run": "1", "status": "failed", "at": "2026-11-12T05:00:00Z" }));
+        let names = |d: &Value| d["repos"].as_array().unwrap().iter().map(|r| field(r, "repo")).collect::<Vec<_>>();
+        // "a" は o/a に完全一致 (owner を省いた名前) するので o/a-s3 は出さない
+        assert_eq!(names(&dashboard(&[], &rs, true, &Query { repo: Some("a"), since: None })), ["o/a"]);
+        // 完全一致が無ければ部分一致
+        assert_eq!(names(&dashboard(&[], &rs, true, &Query { repo: Some("a-s"), since: None })), ["o/a-s3"]);
+        // since 以降の run だけ。残らない repo は出さない
+        let d = dashboard(&[], &rs, true, &Query { repo: None, since: Some("2026-11-12T02:00:00Z") });
+        assert_eq!(names(&d), ["o/a-s3", "o/b", "o/a"]);
+        assert_eq!(d["repos"][2]["runs"].as_array().unwrap().len(), 1, "o/a は 02:00 の run だけ");
+        let d = dashboard(&[], &rs, true, &Query { repo: Some("ippoan/none"), since: None });
+        assert!(d["repos"].as_array().unwrap().is_empty());
     }
 
     #[test]
     fn summary_lists_running_and_latest_failures_only() {
-        let s = summary(&dashboard(&[], &runs(), false, None));
+        let s = summary(&dashboard(&[], &runs(), false, &Query::default()));
         assert!(s.contains("o/b CI #7: currently running"), "{s}");
         assert!(s.contains("o/a CI #2: failed"), "{s}");
         assert!(!s.contains("#1:") && !s.contains("#3:"), "{s}");
@@ -291,7 +338,7 @@ mod tests {
 
     #[test]
     fn jsonrpc_flow() {
-        let call = |m: &str, p: Value| handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": m, "params": p }), |_| json!({ "repos": [], "totalRuns": 0, "connected": true })).unwrap();
+        let call = |m: &str, p: Value| handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": m, "params": p }), |_: &Query| json!({ "repos": [], "totalRuns": 0, "connected": true })).unwrap();
         assert_eq!(call("initialize", json!({ "protocolVersion": "2025-03-26" }))["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(call("initialize", json!({ "protocolVersion": "1999-01-01" }))["result"]["protocolVersion"], LATEST_PROTOCOL);
         let tools = call("tools/list", json!({}));
@@ -309,6 +356,6 @@ mod tests {
         assert!(text.contains("ui/initialize") && !text.contains("https://cdn."), "外から何も読まない");
         assert!(text.contains(&view_version()) && !text.contains("__WIDGET_VERSION__"), "見出しに版を出す");
         assert_eq!(call("bogus", json!({}))["error"]["code"], -32601);
-        assert!(handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }), |_| Value::Null).is_none());
+        assert!(handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }), |_: &Query| Value::Null).is_none());
     }
 }

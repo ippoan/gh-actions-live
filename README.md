@@ -291,13 +291,18 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   - `ref` は完全一致 (拡張が 40 文字で切るので長い branch 名は先頭 40 文字で比べる)。`ref` だけの見張りは閉じない
   - 拡張 (ダッシュボード) が bridge から外れた / 戻ったときも 1 行出す (目隠しを黙らない)。bridge が落ちれば socket が閉じる
 - 一覧を見る (`POST /mcp`、#62): bridge は MCP (Streamable HTTP の stateless JSON) も話す。ツール
-  `actions_dashboard` (引数 `repo` は repo 名の部分一致) が、拡張のダッシュボードと同じ見た目のウィジェット
-  (MCP Apps、`ui://gh-actions-live/dashboard-<HTML のハッシュ>.html`。アプリはウィジェットを URI ごとに使い回すので、HTML が変わると URI も変える) を Claude の会話の中に出す。ウィジェットは 5 秒ごとに
+  `actions_dashboard` (引数 `repo` は完全一致を優先し無ければ部分一致、`since` はその時刻 (UTC) 以降の run だけ。PR を出したら `repo` + `since` で見る) が、拡張のダッシュボードと同じ見た目のウィジェット
+  (MCP Apps、`ui://gh-actions-live/dashboard-<HTML のハッシュ>.html`。見出しにも同じ版 `v<版>+<ハッシュ>` が出る) を Claude の会話の中に出す。ウィジェットは 5 秒ごとに
   ホスト経由でツールを呼び直して bridge の写しを読む (**GitHub の API は叩かない**。データは今までどおり
   ログイン済みのブラウザが流したもの)。モデルには実行中と workflow ごとの最新が赤の run だけを要約で返す。
   ウィジェットが取りに行くのはビュー専用のツール `actions_dashboard_data` (`_meta.ui.visibility: ["app"]`)。
   モデル向けの `actions_dashboard` に `structuredContent` を付けると、Claude Code はテキストの代わりにそちらを
   モデルへ渡し、全 repo 分 (9 万字) が上限超えでファイルに退避されたため分けている。
+  **ウィジェットの HTML を変えたら、claude.ai の設定 → Connectors で connector を切断 → 接続し直す。** claude.ai は
+  接続したときにウィジェット (`ui://`) を先読みして保存し、セッションをまたいで使い回す。bridge を入れ替えても、
+  新しいセッションでも、繋ぎ直すまで古い HTML が描かれる (#62 で 3 回踏んだ。見出しの版で見分けられる)。
+  Code タブのアプリはウィジェットからの `tools/call` を受けない (`Method not found`) ので、Code タブでは自動更新されない。
+  データは `actions_dashboard` の結果の `_meta` で渡し、最新にしたいときは呼び直す
   読み取り専用 (書き込みの口は無い)。登録は user scope で 1 回:
   ```
   claude mcp add --transport http --scope user gh-actions-live http://127.0.0.1:8799/mcp
