@@ -194,7 +194,11 @@ impl Hub {
             }
             "snapshot" => {
                 let list = msg["runs"].as_array().cloned().unwrap_or_default();
-                self.runs = list.iter().map(|r| (run_key(r), r.clone())).collect();
+                // 置き換えずに重ねる。ダッシュボードは複数 (Windows と Linux) 繋がりうるうえ、起動直後は
+                // 読み込み前の空の snapshot を送るので、置き換えると写しが 0 runs に戻る (#62)
+                for r in &list {
+                    self.runs.insert(run_key(r), r.clone());
+                }
                 let running = list.iter().filter(|r| is_active(&field(r, "status"))).count();
                 let bad = list.iter().filter(|r| is_bad(&field(r, "status"))).count();
                 let mut repos: Vec<String> = Vec::new();

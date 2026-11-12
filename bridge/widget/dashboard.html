@@ -132,6 +132,7 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "
 let args = {};
 let data = null;
 let fetchedAt = null;
+let note = "";
 
 function ago(t) {
   if (!t) return "";
@@ -165,7 +166,7 @@ function render() {
   const repos = data.repos || [];
   $("meta").textContent = `${repos.length} repos · ${data.totalRuns} runs · ${
     data.connected ? "拡張 接続中" : "拡張が bridge に繋がっていない (最後に届いた状態)"} · 更新 ${
-    fetchedAt ? new Date(fetchedAt).toLocaleTimeString() : "—"}`;
+    fetchedAt ? new Date(fetchedAt).toLocaleTimeString() : "—"}${note ? " · " + note : ""}`;
   $("grid").innerHTML = repos.map(g => `<section>
       <h2>${esc(g.repo)}<span class="count">${
         g.bad ? `<span style="color:var(--bad)">✕ ${g.bad}</span> · ` : ""}${
@@ -175,8 +176,11 @@ function render() {
     </section>`).join("") || '<div class="empty">run がまだ届いていません (拡張のダッシュボードが bridge に繋がると出ます)</div>';
 }
 
+// actions_dashboard の結果は _meta に同じ形のデータを載せている (モデルには渡らない)
+const META_KEY = "gh-actions-live/dashboard";
 function parse(r) {
   if (r && r.structuredContent) return r.structuredContent;
+  if (r && r._meta && r._meta[META_KEY]) return r._meta[META_KEY];
   const t = r && r.content && r.content[0] && r.content[0].text;
   try { return t ? JSON.parse(t) : null; } catch { return null; }
 }
@@ -187,9 +191,17 @@ function take(r) {
 }
 function showErr(m) { $("err").hidden = !m; $("err").textContent = m; }
 
+// ホストによってはウィジェットからの tools/call を受けない (Claude Code は "Method not found")。
+// そのときは表示をツールの結果 (_meta) のままにし、経過時間だけ数え上げる
+let canPoll = true;
 async function poll() {
+  if (!canPoll) { render(); return; }
   try { take(await app.callServerTool({ name: TOOL, arguments: args })); }
-  catch (e) { showErr("更新に失敗: " + (e && e.message || e)); }
+  catch (e) {
+    const m = String(e && e.message || e);
+    if (/method not found/i.test(m) && data) { canPoll = false; showErr(""); note = "このホストではウィジェットから更新できない — 最新はもう一度 actions_dashboard を呼ぶ"; render(); return; }
+    showErr("更新に失敗: " + m);
+  }
 }
 
 // リンクは sandbox の中では開けないのでホストに頼む
@@ -211,7 +223,7 @@ function applyHost(ctx) {
 
 app.on("ui/notifications/tool-input", p => { args = p.arguments || {}; });
 // actions_dashboard の結果は要約のテキストだけなので、表示はすぐ自分で取りに行く
-app.on("ui/notifications/tool-result", () => { poll(); });
+app.on("ui/notifications/tool-result", r => { if (parse(r)) take(r); else poll(); });
 app.on("ui/notifications/host-context-changed", applyHost);
 
 app.connect().then(ctx => { applyHost(ctx); poll(); }).catch(e => showErr("ホストに繋がらない: " + (e && e.message || e)));

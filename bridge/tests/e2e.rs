@@ -190,6 +190,14 @@ async fn mcp_tool_returns_runs_the_extension_sent() {
     assert!(res["result"].get("structuredContent").is_none());
     assert!(res["result"]["content"][0]["text"].as_str().unwrap().contains("ippoan/x CI #10: currently running"));
 
+    // 2 つ目のダッシュボードが起動直後の空の snapshot を送っても、写しは消えない (重ねる)
+    let mut ext2 = connect(port, "/?role=extension").await;
+    send(&mut ext2, json!({ "type": "snapshot", "runs": [] })).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (_, body) = http(port, "POST", "/mcp", r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"actions_dashboard_data","arguments":{}}}"#).await;
+    let res: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(res["result"]["structuredContent"]["totalRuns"], 1, "空の snapshot で消さない");
+
     // 通知だけなら 202、壊れた JSON は 400、GET は 405 (SSE は持たない)
     assert!(http(port, "POST", "/mcp", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).await.0.contains("202"));
     assert!(http(port, "POST", "/mcp", "{").await.0.contains("400"));
