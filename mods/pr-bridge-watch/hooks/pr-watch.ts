@@ -47,6 +47,17 @@ export function sinceOf(nowMs: number): string {
   return new Date(nowMs - 60_000).toISOString().replace(/\.\d+Z$/, 'Z')
 }
 
+/**
+ * git remote の URL から `owner/repo`。`https://github.com/o/r(.git)` と `git@github.com:o/r(.git)` (ssh:// も) だけ。
+ * github.com 以外は null (`/actions-pane` を引数なしで打ったとき、セッションの repo を引くのに使う)
+ */
+export function repoOfRemoteUrl(url: string): string | null {
+  const m = url
+    .trim()
+    .match(/^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com(?::\d+)?\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/)
+  return m ? `${m[1]}/${m[2]}` : null
+}
+
 /** bridge の `POST /mcp` (右側パネルが resources/read を投げる口)。`ws://127.0.0.1:8799` → `http://127.0.0.1:8799/mcp` */
 export function mcpUrlOf(bridge: string): string {
   return statusUrlOf(bridge) + 'mcp'

@@ -301,7 +301,7 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   **ウィジェットの HTML を変えたら、claude.ai の設定 → Connectors で connector を切断 → 接続し直す。** claude.ai は
   接続したときにウィジェット (`ui://`) を先読みして保存し、セッションをまたいで使い回す。bridge を入れ替えても、
   新しいセッションでも、繋ぎ直すまで古い HTML が描かれる (#62 で 3 回踏んだ。見出しの版で見分けられる)。
-  Code タブのアプリはウィジェットからの `tools/call` を受けない (`Method not found`) ので、Code タブでは自動更新されない。
+  Code タブのアプリはウィジェットからの `tools/call` を受けない (`Method not found`) が、`serverTools` の無いホストではウィジェットが `resources/read` (`gh-actions-live://dashboard?repo=&since=`) で 5 秒ごとに更新する (#74)。
   データは `actions_dashboard` の結果の `_meta` で渡し、最新にしたいときは呼び直す
   読み取り専用 (書き込みの口は無い)。登録は user scope で 1 回:
   ```
@@ -403,7 +403,7 @@ background task を持つセッションを畳まない (`still has live work`)�
 task ID (Monitor の結果) が取れないとき・PR の branch が local に無いときは自動では止まらないので、context にそう書く。
 
 **右側パネル** (`hooks/pane.tsx`): PR を作ると、その repo の run を Code タブの右側パネル (`$.ui.open` の Pane) に
-5 秒ごとに出す (PR を作った時刻の 1 分前以降の run だけ)。`/actions-pane owner/repo` で repo を足して開く (引数なしは開くだけ)。
+5 秒ごとに出す (PR を作った時刻の 1 分前以降の run だけ)。`/actions-pane owner/repo` で repo を足して開く (引数なしはセッションの cwd の `git remote get-url origin` から repo を引いて足す)。
 データは bridge の `POST /mcp` に `resources/read` (`gh-actions-live://dashboard?repo=…&since=…`) を投げて読む
 (GitHub の API は叩かない)。見た目と `ago` / `elapsed` は `bridge/widget/dashboard.html` と揃える。
 installed plugin は起動中のセッションでは読み直されない (更新は新しいセッションから効く)。

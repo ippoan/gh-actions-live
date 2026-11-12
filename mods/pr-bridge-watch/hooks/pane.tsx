@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { RepoRuns, View, Watched } from '../state'
-import { ago, dataUriOf, elapsed, isPrCreateCommand, jst, mcpUrlOf, pullRefsOf, sinceOf } from './pr-watch.ts'
+import { ago, dataUriOf, elapsed, isPrCreateCommand, jst, mcpUrlOf, pullRefsOf, repoOfRemoteUrl, sinceOf } from './pr-watch.ts'
 
 const DEFAULT_BRIDGE = 'ws://127.0.0.1:8799'
 const PANE = 'actions-pane'
@@ -53,12 +53,24 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'actions-pane' }, async ($, e) => {
     const arg = String((e as { args?: unknown }).args ?? '').trim()
-    if (/^[\w.-]+\/[\w.-]+$/.test(arg)) {
+    // 引数なしなら、セッションの cwd の git remote (origin) から repo を引く
+    let repo: string | null = arg
+    if (arg === '') {
+      try {
+        const r = await $.process.run(['git', 'remote', 'get-url', 'origin'], { timeoutMs: 15000 })
+        repo = r.exitCode === 0 ? repoOfRemoteUrl(r.stdout) : null
+      } catch {
+        repo = null
+      }
+    }
+    if (repo !== null && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
       const since = sinceOf(await $.clock.now())
-      await update($, watched, list => [...list.filter(w => w.repo !== arg), { repo: arg, since }])
+      const add = repo
+      await update($, watched, list => [...list.filter(w => w.repo !== add), { repo: add, since }])
     }
     await $.ui.open({ id: PANE, title: TITLE })
-    return { text: arg ? `${arg} をパネルに足した` : 'パネルを開いた' }
+    if (repo) return { text: `${repo} をパネルに足した` }
+    return { text: 'パネルを開いた (/actions-pane owner/repo で足せる)' }
   })
 
   // PR を作ったら、その repo をその時刻からパネルに出す (gh pr create と pr-push.sh)

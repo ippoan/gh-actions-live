@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   ago, archiveTargetOf, dashboardHintOf, dataUriOf, elapsed, jst, mcpUrlOf, sinceOf, headOfCommand, isAutoModeNoVerdict, isDesktopEntrypoint, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest, isTaskGone,
-  pullRefsOf, statusUrlOf, STOP_REQUEST, watchUrlOf,
+  pullRefsOf, repoOfRemoteUrl, statusUrlOf, STOP_REQUEST, watchUrlOf,
 } from '../mods/pr-bridge-watch/hooks/pr-watch.ts';
 import { register, STOP_REQUEST_WAIT_MS } from '../mods/pr-bridge-watch/hooks/register.ts';
 
@@ -141,6 +141,18 @@ test('右側パネル: since は 1 分前を秒で切り、dashboardHintOf と�
   const now = Date.parse('2026-11-12T13:12:05.678Z');
   assert.equal(sinceOf(now), '2026-11-12T13:11:05Z');
   assert.ok(dashboardHintOf('o/r', now).includes(`since: "${sinceOf(now)}"`));
+});
+
+test('右側パネル: git remote の URL から owner/repo (github.com だけ)', () => {
+  assert.equal(repoOfRemoteUrl('https://github.com/ippoan/gh-actions-live.git\n'), 'ippoan/gh-actions-live');
+  assert.equal(repoOfRemoteUrl('https://github.com/o/r'), 'o/r');
+  assert.equal(repoOfRemoteUrl('https://x-access-token@github.com/o/r.git'), 'o/r');
+  assert.equal(repoOfRemoteUrl('git@github.com:o/r.git'), 'o/r');
+  assert.equal(repoOfRemoteUrl('git@github.com:o/r'), 'o/r');
+  assert.equal(repoOfRemoteUrl('ssh://git@github.com/o/r.git'), 'o/r');
+  assert.equal(repoOfRemoteUrl('https://gitlab.com/o/r.git'), null);
+  assert.equal(repoOfRemoteUrl('git@example.com:o/r.git'), null);
+  assert.equal(repoOfRemoteUrl(''), null);
 });
 
 test('右側パネル: bridge の ws URL から /mcp の http URL', () => {
