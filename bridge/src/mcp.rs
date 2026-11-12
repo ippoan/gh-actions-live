@@ -80,6 +80,18 @@ fn run_time(r: &Value) -> String {
     if at.is_empty() { field(r, "seenAt") } else { at }
 }
 
+/// 拡張の push (events) で初めて現れた run に、その event の観測時刻 `t` を `seenAt` として持たせる。
+/// 開始時刻ではなく拡張が最初に見た時刻。経過時間は実際より短く出うる (拡張の seenAt と同じ)
+pub fn fill_seen_at(run: &mut serde_json::Map<String, Value>, ev: &serde_json::Map<String, Value>) {
+    let has = |k: &str| run.get(k).and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    if has("at") || has("seenAt") {
+        return;
+    }
+    if let Some(t) = ev.get("t").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+        run.insert("seenAt".into(), t.into());
+    }
+}
+
 /// ツールの引数のうち絞り込み。`repo`: repo 名 (完全一致か `owner/` を省いた名前の一致を優先し、無ければ部分一致)。
 /// `since`: この時刻 (ISO 8601、UTC の `Z` 付き) 以降に始まった run だけ。PR を出した repo をその時刻から見る用
 #[derive(Default)]
@@ -139,7 +151,7 @@ pub fn dashboard(order: &[String], runs: &HashMap<String, Value>, connected: boo
                 "runs": list.iter().take(MAX_RUNS_PER_REPO).map(|r| json!({
                     "workflow": field(r, "workflow"), "run": field(r, "run"), "status": field(r, "status"),
                     "state": state_class(&field(r, "status")), "title": field(r, "title"), "ref": field(r, "ref"),
-                    "by": field(r, "by"), "href": field(r, "href"), "at": field(r, "at"), "duration": field(r, "duration"),
+                    "by": field(r, "by"), "href": field(r, "href"), "at": run_time(r), "duration": field(r, "duration"),
                 })).collect::<Vec<_>>(),
             })
         })
@@ -417,5 +429,47 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t[0]["uriTemplate"], "gh-actions-live://dashboard{?repo,since}");
         assert_eq!(t[0]["mimeType"], "application/json");
+    }
+
+    fn obj(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn fill_seen_at_sets_t_when_run_has_no_time() {
+        let mut run = obj(json!({ "repo": "o/a", "run": "1" }));
+        fill_seen_at(&mut run, &obj(json!({ "t": "2026-11-12T05:00:00Z" })));
+        assert_eq!(run["seenAt"], "2026-11-12T05:00:00Z");
+        // 空文字の at は無いのと同じ
+        let mut run = obj(json!({ "at": "" }));
+        fill_seen_at(&mut run, &obj(json!({ "t": "2026-11-12T05:00:00Z" })));
+        assert_eq!(run["seenAt"], "2026-11-12T05:00:00Z");
+    }
+
+    #[test]
+    fn fill_seen_at_keeps_existing_time() {
+        let mut run = obj(json!({ "at": "2026-11-12T01:00:00Z" }));
+        fill_seen_at(&mut run, &obj(json!({ "t": "2026-11-12T05:00:00Z" })));
+        assert!(run.get("seenAt").is_none(), "at があれば seenAt を作らない");
+        let mut run = obj(json!({ "seenAt": "2026-11-12T02:00:00Z" }));
+        fill_seen_at(&mut run, &obj(json!({ "t": "2026-11-12T05:00:00Z" })));
+        assert_eq!(run["seenAt"], "2026-11-12T02:00:00Z", "最初に見た時刻を後の event で上書きしない");
+    }
+
+    #[test]
+    fn fill_seen_at_ignores_events_without_t() {
+        for ev in [json!({}), json!({ "t": "" }), json!({ "t": 1 })] {
+            let mut run = obj(json!({ "run": "1" }));
+            fill_seen_at(&mut run, &obj(ev));
+            assert!(run.get("seenAt").is_none());
+        }
+    }
+
+    #[test]
+    fn dashboard_gives_seen_at_as_at() {
+        let runs: HashMap<String, Value> =
+            [("k".to_string(), json!({ "repo": "o/a", "run": "1", "status": "currently running", "seenAt": "2026-11-12T05:00:00Z" }))].into();
+        let d = dashboard(&[], &runs, true, &Query::default());
+        assert_eq!(d["repos"][0]["runs"][0]["at"], "2026-11-12T05:00:00Z");
     }
 }
