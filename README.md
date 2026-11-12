@@ -268,6 +268,9 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   (MCP Apps、`ui://gh-actions-live/dashboard.html`) を Claude の会話の中に出す。ウィジェットは 5 秒ごとに
   ホスト経由でツールを呼び直して bridge の写しを読む (**GitHub の API は叩かない**。データは今までどおり
   ログイン済みのブラウザが流したもの)。モデルには実行中と workflow ごとの最新が赤の run だけを要約で返す。
+  ウィジェットが取りに行くのはビュー専用のツール `actions_dashboard_data` (`_meta.ui.visibility: ["app"]`)。
+  モデル向けの `actions_dashboard` に `structuredContent` を付けると、Claude Code はテキストの代わりにそちらを
+  モデルへ渡し、全 repo 分 (9 万字) が上限超えでファイルに退避されたため分けている。
   読み取り専用 (書き込みの口は無い)。登録は user scope で 1 回:
   ```
   claude mcp add --transport http --scope user gh-actions-live http://127.0.0.1:8799/mcp

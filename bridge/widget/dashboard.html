@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GitHub Alive Watch</title>
 <!-- bridge の /mcp が返す MCP Apps のビュー (Refs #62)。見た目は extension/dashboard.html と揃える。
-     データは actions_dashboard の structuredContent。5 秒ごとにホスト経由で tools/call し直す
+     データはビュー専用のツール actions_dashboard_data の structuredContent。モデル向けの actions_dashboard は
+     要約のテキストしか返さない (structuredContent がモデルに渡って 9 万字になるため)。5 秒ごとにホスト経由で tools/call し直す
      (iframe は Windows 側に出るので Linux の bridge へ直接は繋がない)。 -->
 <style>
   :root {
@@ -71,7 +72,7 @@
 <script type="module">
 import { App, applyDocumentTheme, applyHostStyleVariables, applyHostFonts } from "__EXT_APPS_URL__";
 
-const TOOL = "actions_dashboard";
+const TOOL = "actions_dashboard_data";
 const POLL_MS = 5000;
 const app = new App({ name: "gh-actions-live-dashboard", version: "1.0.0" }, {}, { autoResize: true });
 const $ = id => document.getElementById(id);
@@ -157,11 +158,13 @@ function applyHost(ctx) {
 }
 
 app.ontoolinput = p => { args = (p && p.arguments) || {}; };
-app.ontoolresult = take;
+// actions_dashboard の結果は要約のテキストだけなので、表示はすぐ自分で取りに行く
+app.ontoolresult = () => { poll(); };
 app.onhostcontextchanged = applyHost;
 
 await app.connect();
 applyHost(app.getHostContext());
+poll();
 setInterval(poll, POLL_MS);
 </script>
 </body>

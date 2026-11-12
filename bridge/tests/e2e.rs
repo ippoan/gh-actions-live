@@ -175,7 +175,7 @@ async fn mcp_tool_returns_runs_the_extension_sent() {
     .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let (status, body) = http(port, "POST", "/mcp", r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"actions_dashboard","arguments":{}}}"#).await;
+    let (status, body) = http(port, "POST", "/mcp", r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"actions_dashboard_data","arguments":{}}}"#).await;
     assert!(status.contains("200"), "{status}");
     let res: Value = serde_json::from_str(&body).unwrap();
     let d = &res["result"]["structuredContent"];
@@ -183,6 +183,11 @@ async fn mcp_tool_returns_runs_the_extension_sent() {
     assert_eq!(d["repos"][0]["repo"], "ippoan/x");
     assert_eq!(d["repos"][0]["runs"][0]["state"], "run");
     assert_eq!(d["repos"][1]["repo"], "ippoan/empty", "hello の repo は run が無くても末尾に出る");
+
+    // モデル向けのツールは要約のテキストだけ (structuredContent を付けるとそちらがモデルに渡るため)
+    let (_, body) = http(port, "POST", "/mcp", r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"actions_dashboard","arguments":{}}}"#).await;
+    let res: Value = serde_json::from_str(&body).unwrap();
+    assert!(res["result"].get("structuredContent").is_none());
     assert!(res["result"]["content"][0]["text"].as_str().unwrap().contains("ippoan/x CI #10: currently running"));
 
     // 通知だけなら 202、壊れた JSON は 400、GET は 405 (SSE は持たない)

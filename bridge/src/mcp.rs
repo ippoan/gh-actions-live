@@ -5,7 +5,11 @@
 //!   リクエスト 1 本 = JSON-RPC 1 通 (配列のバッチも受ける)
 //! - データは拡張 (ログイン済みのブラウザ) が流した snapshot / events の写しだけ。
 //!   **GitHub の API は叩かない** (レート制限に当てない。ユーザーの決定)
-//! - ビューは sandbox の iframe で動き、5 秒ごとにホスト経由の `tools/call` でこのツールを呼び直す。
+//! - モデルに見せるツール (`actions_dashboard`) は要約のテキストだけを返す。Claude Code は
+//!   `structuredContent` があると text の代わりにそれをモデルへ渡し、42 repo 分 (9 万字) が毎回
+//!   上限超えでファイルに退避された (#62 の実機確認)。repo ごとの run はビュー専用のツール
+//!   (`actions_dashboard_data`、`_meta.ui.visibility = ["app"]`) の `structuredContent` で渡す
+//! - ビューは sandbox の iframe で動き、5 秒ごとにホスト経由の `tools/call` でビュー専用のツールを呼ぶ。
 //!   iframe は Claude のデスクトップアプリ (Windows) 側に出るので、Linux の bridge へ直接 ws は張らない
 //! - 書き込みの口は無い (読み取り専用)。8799 に届く者には今でも `GET /` で同じ程度の情報が見えている
 
@@ -17,6 +21,8 @@ use serde_json::{Value, json};
 use crate::watch::{field, is_active, is_bad};
 
 pub const TOOL: &str = "actions_dashboard";
+/// ビュー専用 (モデルには出さない)。repo ごとの run を structuredContent で返す
+pub const DATA_TOOL: &str = "actions_dashboard_data";
 pub const VIEW_URI: &str = "ui://gh-actions-live/dashboard.html";
 /// MCP Apps の HTML リソースの mimeType (ext-apps の RESOURCE_MIME_TYPE と同値)
 pub const MIME: &str = "text/html;profile=mcp-app";
@@ -114,20 +120,35 @@ pub fn summary(d: &Value) -> String {
     lines.join("\n")
 }
 
-fn tool_def() -> Value {
+fn repo_arg() -> Value {
     json!({
-        "name": TOOL,
-        "title": "GitHub Actions ダッシュボード",
-        "description": "watch 中の全 repo の GitHub Actions の run (実行中・失敗・経過時間) を、拡張のダッシュボードと同じ見た目のウィジェットで出す。\
-データはログイン済みのブラウザ (gh-actions-live 拡張) が bridge に流したもので、GitHub の API は叩かない。ウィジェットは 5 秒ごとに更新される。",
-        "inputSchema": {
-            "type": "object",
-            "properties": { "repo": { "type": "string", "description": "repo 名の部分一致で絞る (例: alc-app)。省略すると全 repo" } },
-            "additionalProperties": false
-        },
-        "annotations": { "readOnlyHint": true, "openWorldHint": false },
-        "_meta": { "ui": { "resourceUri": VIEW_URI }, "ui/resourceUri": VIEW_URI }
+        "type": "object",
+        "properties": { "repo": { "type": "string", "description": "repo 名の部分一致で絞る (例: alc-app)。省略すると全 repo" } },
+        "additionalProperties": false
     })
+}
+
+fn tool_defs() -> Value {
+    json!([
+        {
+            "name": TOOL,
+            "title": "GitHub Actions ダッシュボード",
+            "description": "watch 中の全 repo の GitHub Actions の run (実行中・失敗・経過時間) を、拡張のダッシュボードと同じ見た目のウィジェットで出す。\
+結果のテキストは実行中の run と workflow ごとの最新が赤の run だけの要約。\
+データはログイン済みのブラウザ (gh-actions-live 拡張) が bridge に流したもので、GitHub の API は叩かない。ウィジェットは 5 秒ごとに更新される。",
+            "inputSchema": repo_arg(),
+            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "_meta": { "ui": { "resourceUri": VIEW_URI }, "ui/resourceUri": VIEW_URI }
+        },
+        {
+            "name": DATA_TOOL,
+            "title": "GitHub Actions ダッシュボードのデータ (ウィジェット用)",
+            "description": "actions_dashboard のウィジェットが更新に使う。repo ごとの run を JSON で返す (大きいのでモデルからは呼ばない)",
+            "inputSchema": repo_arg(),
+            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "_meta": { "ui": { "resourceUri": VIEW_URI, "visibility": ["app"] } }
+        }
+    ])
 }
 
 fn ok(id: &Value, result: Value) -> Value {
@@ -154,14 +175,18 @@ pub fn handle(req: &Value, data: impl FnOnce(Option<&str>) -> Value) -> Option<V
             }))
         }
         "ping" => ok(&id, json!({})),
-        "tools/list" => ok(&id, json!({ "tools": [tool_def()] })),
+        "tools/list" => ok(&id, json!({ "tools": tool_defs() })),
         "tools/call" => {
-            if params["name"].as_str() != Some(TOOL) {
-                return Some(err(&id, -32602, format!("知らないツール: {}", params["name"])));
-            }
             let filter = params["arguments"]["repo"].as_str();
-            let d = data(filter);
-            ok(&id, json!({ "content": [{ "type": "text", "text": summary(&d) }], "structuredContent": d }))
+            match params["name"].as_str() {
+                // モデル向け: 要約だけ (structuredContent を付けるとそちらがモデルに渡る)
+                Some(TOOL) => ok(&id, json!({ "content": [{ "type": "text", "text": summary(&data(filter)) }] })),
+                Some(DATA_TOOL) => {
+                    let d = data(filter);
+                    ok(&id, json!({ "content": [{ "type": "text", "text": summary(&d) }], "structuredContent": d }))
+                }
+                _ => return Some(err(&id, -32602, format!("知らないツール: {}", params["name"]))),
+            }
         }
         "resources/list" => ok(&id, json!({ "resources": [{
             "uri": VIEW_URI, "name": "GitHub Actions dashboard view", "mimeType": MIME,
@@ -248,8 +273,13 @@ mod tests {
         let call = |m: &str, p: Value| handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": m, "params": p }), |_| json!({ "repos": [], "totalRuns": 0, "connected": true })).unwrap();
         assert_eq!(call("initialize", json!({ "protocolVersion": "2025-03-26" }))["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(call("initialize", json!({ "protocolVersion": "1999-01-01" }))["result"]["protocolVersion"], LATEST_PROTOCOL);
-        assert_eq!(call("tools/list", json!({}))["result"]["tools"][0]["_meta"]["ui"]["resourceUri"], VIEW_URI);
-        assert!(call("tools/call", json!({ "name": TOOL, "arguments": {} }))["result"]["structuredContent"].is_object());
+        let tools = call("tools/list", json!({}));
+        assert_eq!(tools["result"]["tools"][0]["_meta"]["ui"]["resourceUri"], VIEW_URI);
+        assert_eq!(tools["result"]["tools"][1]["_meta"]["ui"]["visibility"], json!(["app"]));
+        let model = call("tools/call", json!({ "name": TOOL, "arguments": {} }));
+        assert!(model["result"].get("structuredContent").is_none(), "モデル向けに JSON を渡さない");
+        assert!(model["result"]["content"][0]["text"].as_str().unwrap().contains("repos"));
+        assert!(call("tools/call", json!({ "name": DATA_TOOL, "arguments": {} }))["result"]["structuredContent"].is_object());
         assert_eq!(call("tools/call", json!({ "name": "nope" }))["error"]["code"], -32602);
         let html = call("resources/read", json!({ "uri": VIEW_URI }));
         let text = html["result"]["contents"][0]["text"].as_str().unwrap();
