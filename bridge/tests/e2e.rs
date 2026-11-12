@@ -195,3 +195,44 @@ async fn mcp_tool_returns_runs_the_extension_sent() {
     assert!(http(port, "POST", "/mcp", "{").await.0.contains("400"));
     assert!(http(port, "GET", "/mcp", "").await.0.contains("405"));
 }
+
+async fn start_with_token(token: &str) -> u16 {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let app = gh_actions_bridge::app_with_mcp_token(port, token).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    port
+}
+
+/// HTTP/1.1 を素で 1 往復し、ステータス行だけ返す (追加のヘッダ付き)
+async fn status_with(port: u16, method: &str, path: &str, extra: &str, body: &str) -> String {
+    let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let req = format!("{method} {path} HTTP/1.1\r\nHost: x\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    tcp.write_all(req.as_bytes()).await.unwrap();
+    let mut res = String::new();
+    tcp.read_to_string(&mut res).await.unwrap();
+    res.lines().next().unwrap_or("").to_string()
+}
+
+#[tokio::test]
+async fn public_mcp_needs_the_token_and_tunnel_reaches_nothing_else() {
+    let token = "t".repeat(40);
+    let port = start_with_token(&token).await;
+    let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    let cf = "cf-ray: 1234-NRT\r\n";
+    assert!(status_with(port, "POST", &format!("/mcp/{token}"), cf, ping).await.contains("200"));
+    assert!(status_with(port, "POST", "/mcp/wrong", cf, ping).await.contains("404"));
+    // Tunnel 越しには /mcp/ 以外を出さない
+    assert!(status_with(port, "POST", "/cmd", cf, r#"{"command":"snapshot"}"#).await.contains("403"));
+    assert!(status_with(port, "POST", "/mcp", cf, ping).await.contains("403"));
+    assert!(status_with(port, "GET", "/", cf, "").await.contains("403"));
+    // localhost からは今までどおり
+    assert!(status_with(port, "POST", "/mcp", "", ping).await.contains("200"));
+}
+
+#[tokio::test]
+async fn public_mcp_is_closed_without_a_token() {
+    let port = start().await;
+    let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    assert!(status_with(port, "POST", &format!("/mcp/{}", "t".repeat(40)), "", ping).await.contains("404"));
+}

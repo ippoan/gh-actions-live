@@ -65,6 +65,8 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   モデル向けの `actions_dashboard` に `structuredContent` を付けない (Claude Code はそれをテキストの代わりにモデルへ渡し、
   全 repo 分 9 万字が上限超えで退避された)。ビューのデータは app 専用の `actions_dashboard_data` から。
   見た目と並びは `extension/dashboard.js` の `card()` / `render()` / `MAX_CARDS_PER_REPO` と揃える (片方だけ変えない)。
+  **Claude Code はウィジェットを描かない** (公式。テキストだけ)。描くのは claude.ai の custom connector 経由で、
+  Tunnel 越しの `/mcp/<合言葉>` だけを外に出す。`tunnel_guard` (cf-ray 付きは `/mcp/` 以外 403) を外さない。
   **GitHub の API を叩く経路を足さない** (レート制限を避けるためブラウザから取る、がユーザーの決定)
 - **設定の正本は private repo `ippoan/gh-actions-live-config` の `config.json`** (`seed-config.js` が github.com の cookie で raw を読む)。
   取り込みは**内容ハッシュが変わったときだけ** (毎回上書きすると設定画面 / `set-config` の値が 10 分で戻る)。

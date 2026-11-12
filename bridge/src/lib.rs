@@ -8,6 +8,9 @@
 //!   (Claude Code の Monitor の ws ソースにそのまま渡す。絞り込みは [`watch`])
 //! - `POST /cmd`               本文の JSON を拡張へのコマンドとして送る
 //! - `POST /mcp`               MCP (Streamable HTTP の stateless JSON)。全 repo の run をウィジェットで見せる ([`mcp`])
+//! - `POST /mcp/<合言葉>`       同じ MCP を Cloudflare Tunnel 越しに claude.ai の custom connector へ出す口。
+//!   合言葉は環境変数 `GH_ACTIONS_BRIDGE_MCP_TOKEN` (32 文字以上)。未設定・不一致は 404。
+//!   Tunnel 経由 (`cf-ray` ヘッダ付き) の要求はこの口以外すべて 403 (`/cmd` や `/watch` を外に出さない)
 //! - `GET /`                   接続中のクライアント一覧
 //!
 //! セッションから独立して 1 本だけ常駐させる (systemd --user)。セッションが Monitor で bridge 自体を
@@ -29,7 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Query, Request, State};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -62,6 +65,8 @@ struct Hub {
     /// 直近の snapshot に events を重ねた写し。後から繋いだ listener / watch に渡す
     /// (拡張へ snapshot コマンドを投げ直すと、全 repo の要約行が stdout に出てしまう)
     runs: HashMap<String, Value>,
+    /// `/mcp/<合言葉>` の合言葉。None ならその口は閉じている
+    mcp_token: Option<String>,
 }
 
 type Shared = Arc<Mutex<Hub>>;
@@ -238,17 +243,31 @@ fn close_done() -> Message {
     Message::Close(Some(CloseFrame { code: 1000, reason: "done".into() }))
 }
 
+/// 外へ出す MCP の合言葉の最短の長さ (推測されない長さ)
+const MIN_MCP_TOKEN: usize = 32;
+
 pub fn app(port: u16) -> Router {
-    app_with_refresh(port, Duration::from_secs(300))
+    let token = std::env::var("GH_ACTIONS_BRIDGE_MCP_TOKEN").ok().filter(|t| t.len() >= MIN_MCP_TOKEN);
+    eprintln!("[bridge] /mcp/<合言葉>: {}", if token.is_some() { "開いている" } else { "閉じている (GH_ACTIONS_BRIDGE_MCP_TOKEN が無いか 32 文字未満)" });
+    build(port, Duration::from_secs(300), token)
 }
 
 pub fn app_with_refresh(port: u16, every: Duration) -> Router {
+    build(port, every, None)
+}
+
+pub fn app_with_mcp_token(port: u16, token: &str) -> Router {
+    build(port, Duration::from_secs(300), Some(token.to_string()))
+}
+
+fn build(port: u16, every: Duration, mcp_token: Option<String>) -> Router {
     let hub: Shared = Arc::new(Mutex::new(Hub {
         port,
         next_id: 0,
         clients: HashMap::new(),
         watchers: HashMap::new(),
         runs: HashMap::new(),
+        mcp_token,
     }));
     tokio::spawn(keepalive(hub.clone()));
     tokio::spawn(auto_refresh(hub.clone(), every));
@@ -257,7 +276,9 @@ pub fn app_with_refresh(port: u16, every: Duration) -> Router {
         .route("/watch", get(watch_ws))
         .route("/cmd", post(cmd))
         .route("/mcp", post(mcp_post).get(method_not_allowed).delete(method_not_allowed))
+        .route("/mcp/{token}", post(mcp_public).get(method_not_allowed).delete(method_not_allowed))
         .layer(middleware::from_fn(cors))
+        .layer(middleware::from_fn(tunnel_guard))
         .with_state(hub)
 }
 
@@ -326,6 +347,29 @@ async fn mcp_post(State(hub): State<Shared>, body: String) -> Response {
         Some(v) => Json(v).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
+}
+
+// Tunnel 越しの口。合言葉が違えば口が在ることも見せない (404)
+async fn mcp_public(State(hub): State<Shared>, Path(token): Path<String>, body: String) -> Response {
+    let ok = hub.lock().unwrap().mcp_token.as_deref().is_some_and(|t| same(t.as_bytes(), token.as_bytes()));
+    if !ok {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    mcp_post(State(hub), body).await
+}
+
+/// 長さ以外で早く抜けない比較 (合言葉を 1 文字ずつ当てられないように)
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+// cloudflared は要求に cf-ray を付ける。Tunnel の ingress は /mcp/ だけを通す設定にするが、
+// 設定を間違えても /cmd (拡張への任意コマンド) や /watch が外に出ないよう、bridge 側でも塞ぐ
+async fn tunnel_guard(req: Request, next: Next) -> Response {
+    if req.headers().contains_key("cf-ray") && !req.uri().path().starts_with("/mcp/") {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(req).await
 }
 
 // SSE の口も session も持たない (stateless)

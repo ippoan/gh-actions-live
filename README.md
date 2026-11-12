@@ -277,6 +277,14 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   ```
   bridge を入れ替える (`cargo install --locked --path bridge` → `systemctl --user restart gh-actions-bridge`) と
   全セッションの `/watch` が数秒切れるので、入れ替えと登録はユーザーの承認を取ってから
+- **ウィジェットとして描かせるには claude.ai の custom connector に登録する** (#62)。Claude Code (CLI・デスクトップの
+  Code タブ) は MCP Apps を描かずテキストだけを出す (公式: "Claude Code calls the tool as text and doesn't render the UI")。
+  描くのは claude.ai / Claude デスクトップのチャットで、サーバーは Anthropic 側から https で届く必要がある。そこで:
+  1. `~/.config/gh-actions-bridge/env` (0600) に `GH_ACTIONS_BRIDGE_MCP_TOKEN=<32 文字以上のランダム>` を置き、bridge を再起動。
+     `POST /mcp/<合言葉>` が開く (未設定・不一致は 404)
+  2. Cloudflare Tunnel の ingress に `hostname: <host>` / `path: ^/mcp/` / `service: http://localhost:8799` を足す。
+     bridge も `cf-ray` 付き (= Tunnel 経由) の要求は `/mcp/` 以外を 403 にする (`/cmd` や `/watch` を外に出さない)
+  3. claude.ai の設定 → Connectors → custom connector に `https://<host>/mcp/<合言葉>` を登録
 - 生の JSON が欲しい購読者は `/?role=listener` (繋いだ時点で bridge の写しを snapshot として 1 回受ける。送った JSON は拡張へのコマンド)
 - Linux → 拡張 (設定): `curl -X POST localhost:8799/cmd -d '{"command":"set-config","repos":["owner/repo"],"notify":false}'`
   で repo を変えられる。`get-config` で現在値を返す。**repos は全セッション共通**なので、
