@@ -214,6 +214,9 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
     既に終わった run を指定しても待ちぼうけにならない
   - `run` を指定すると、その run が全部終わった時点で bridge が socket を閉じる (= Monitor の見張りが終わる)。
     run 番号は workflow ごとなので `workflow` と併用する。re-run は同じ番号で走り直すので、閉じた後に re-run したら繋ぎ直す
+  - GitHub のログインが切れると (拡張が Actions ページの `meta[name=user-login]` で判定) 全 /watch に
+    `watch: GitHub のログインが切れた …` の 1 行が届き、切れている間に繋いだ /watch にも最初に 1 回届く。
+    戻ったら `watch: GitHub のログインが戻った (<user>)`。bridge の状態 (`GET /`) の `loggedIn` は null (未知) / true / false
   - `ref` は完全一致 (拡張が 40 文字で切るので長い branch 名は先頭 40 文字で比べる)。`ref` だけの見張りは閉じない
   - 拡張 (ダッシュボード) が bridge から外れた / 戻ったときも 1 行出す (目隠しを黙らない)。bridge が落ちれば socket が閉じる
 - 一覧を見る (`POST /mcp`、#62): bridge は MCP (Streamable HTTP の stateless JSON) も話す。ツール
