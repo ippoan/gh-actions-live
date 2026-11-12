@@ -36,8 +36,16 @@ const LATEST_PROTOCOL: &str = "2025-06-18";
 const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
 /// ビューは外から何も読まない (ext-apps も CDN から読まず、ホストとの通信を HTML の中に持つ)
+/// ウィジェットの版: bridge の版 + HTML の中身のハッシュ (先頭 7 桁)。見出しに出して、ホストが古い HTML を
+/// 使い回していないかを画面で見分ける (Claude のアプリはセッション中に読み直さない、#62)
+pub fn view_version() -> String {
+    // FNV-1a。HTML が変われば変わればよいので暗号的な強さは要らない
+    let h = VIEW_HTML.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    format!("v{}+{:07x}", env!("CARGO_PKG_VERSION"), h >> 36)
+}
+
 pub fn view_html() -> String {
-    VIEW_HTML.to_string()
+    VIEW_HTML.replace("__WIDGET_VERSION__", &view_version())
 }
 
 /// 拡張のダッシュボードの `cls()` と同じ分類: ok / run / bad / idle
@@ -291,6 +299,7 @@ mod tests {
         let html = call("resources/read", json!({ "uri": VIEW_URI }));
         let text = html["result"]["contents"][0]["text"].as_str().unwrap();
         assert!(text.contains("ui/initialize") && !text.contains("https://cdn."), "外から何も読まない");
+        assert!(text.contains(&view_version()) && !text.contains("__WIDGET_VERSION__"), "見出しに版を出す");
         assert_eq!(call("bogus", json!({}))["error"]["code"], -32601);
         assert!(handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }), |_| Value::Null).is_none());
     }
