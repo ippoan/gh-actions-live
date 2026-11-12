@@ -188,6 +188,7 @@ impl Hub {
                             }
                         }
                         run.insert("status".into(), ev.get("label").cloned().unwrap_or(Value::Null));
+                        mcp::fill_seen_at(run, ev);
                     }
                 }
                 self.feed_watchers(msg);

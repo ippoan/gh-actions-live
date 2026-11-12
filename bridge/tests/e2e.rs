@@ -244,3 +244,27 @@ async fn public_mcp_is_closed_without_a_token() {
     let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
     assert!(status_with(port, "POST", &format!("/mcp/{}", "t".repeat(40)), "", ping).await.contains("404"));
 }
+
+#[tokio::test]
+async fn run_first_seen_in_events_gets_seen_at_until_snapshot_brings_at() {
+    let port = start().await;
+    let mut ext = connect(port, "/?role=extension").await;
+    let data = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"actions_dashboard_data","arguments":{}}}"#;
+    // push で初めて現れた run (snapshot の行に無い) には at が無い → 拡張の観測時刻 t を出す
+    send(&mut ext, json!({ "type": "events", "events": [
+        { "repo": "ippoan/x", "workflow": "CI", "run": "11", "from": "", "label": "currently running", "t": "2026-11-12T05:00:00Z" },
+    ] }))
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let res: Value = serde_json::from_str(&http(port, "POST", "/mcp", data).await.1).unwrap();
+    assert_eq!(res["result"]["structuredContent"]["repos"][0]["runs"][0]["at"], "2026-11-12T05:00:00Z");
+
+    // 後から来た snapshot の正確な at が勝つ
+    send(&mut ext, json!({ "type": "snapshot", "runs": [
+        { "repo": "ippoan/x", "workflow": "CI", "run": "11", "status": "currently running", "at": "2026-11-12T04:58:00Z" },
+    ] }))
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let res: Value = serde_json::from_str(&http(port, "POST", "/mcp", data).await.1).unwrap();
+    assert_eq!(res["result"]["structuredContent"]["repos"][0]["runs"][0]["at"], "2026-11-12T04:58:00Z");
+}
