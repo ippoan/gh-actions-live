@@ -309,7 +309,12 @@ async fn mcp_post(State(hub): State<Shared>, body: String) -> Response {
         let e = json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "parse error" } });
         return (StatusCode::BAD_REQUEST, Json(e)).into_response();
     };
-    let one = |r: &Value| mcp::handle(r, |filter| hub.lock().unwrap().dashboard(filter));
+    // どの method が来たかを journal に残す (ウィジェットの resource をホストが取りに来たかの切り分け用)
+    let one = |r: &Value| {
+        let name = r["params"]["name"].as_str().or(r["params"]["uri"].as_str()).unwrap_or("");
+        eprintln!("[bridge] mcp {} {name}", r["method"].as_str().unwrap_or("?"));
+        mcp::handle(r, |filter| hub.lock().unwrap().dashboard(filter))
+    };
     let res = match &req {
         Value::Array(list) => {
             let out: Vec<Value> = list.iter().filter_map(one).collect();
