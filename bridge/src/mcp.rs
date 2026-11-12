@@ -26,8 +26,6 @@ pub const DATA_TOOL: &str = "actions_dashboard_data";
 pub const VIEW_URI: &str = "ui://gh-actions-live/dashboard.html";
 /// MCP Apps の HTML リソースの mimeType (ext-apps の RESOURCE_MIME_TYPE と同値)
 pub const MIME: &str = "text/html;profile=mcp-app";
-/// ビューが読む ext-apps (依存込み 1 ファイル)。ci-dashboard の Release Wave のビューと同じ版
-const EXT_APPS_URL: &str = "https://cdn.jsdelivr.net/npm/@modelcontextprotocol/ext-apps@1.7.5/dist/src/app-with-deps.js";
 const VIEW_HTML: &str = include_str!("../widget/dashboard.html");
 /// repo ごとに返す run の上限 (拡張のダッシュボードの MAX_CARDS_PER_REPO と同じ)
 pub const MAX_RUNS_PER_REPO: usize = 7;
@@ -35,8 +33,9 @@ pub const MAX_RUNS_PER_REPO: usize = 7;
 const LATEST_PROTOCOL: &str = "2025-06-18";
 const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
+/// ビューは外から何も読まない (ext-apps も CDN から読まず、ホストとの通信を HTML の中に持つ)
 pub fn view_html() -> String {
-    VIEW_HTML.replace("__EXT_APPS_URL__", EXT_APPS_URL)
+    VIEW_HTML.to_string()
 }
 
 /// 拡張のダッシュボードの `cls()` と同じ分類: ok / run / bad / idle
@@ -199,7 +198,7 @@ pub fn handle(req: &Value, data: impl FnOnce(Option<&str>) -> Value) -> Option<V
             }
             ok(&id, json!({ "contents": [{
                 "uri": VIEW_URI, "mimeType": MIME, "text": view_html(),
-                "_meta": { "ui": { "prefersBorder": true, "csp": { "resourceDomains": ["https://cdn.jsdelivr.net"] } } }
+                "_meta": { "ui": { "prefersBorder": true } }
             }] }))
         }
         m => err(&id, -32601, format!("知らない method: {m}")),
@@ -283,7 +282,7 @@ mod tests {
         assert_eq!(call("tools/call", json!({ "name": "nope" }))["error"]["code"], -32602);
         let html = call("resources/read", json!({ "uri": VIEW_URI }));
         let text = html["result"]["contents"][0]["text"].as_str().unwrap();
-        assert!(text.contains(EXT_APPS_URL) && !text.contains("__EXT_APPS_URL__"));
+        assert!(text.contains("ui/initialize") && !text.contains("https://cdn."), "外から何も読まない");
         assert_eq!(call("bogus", json!({}))["error"]["code"], -32601);
         assert!(handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }), |_| Value::Null).is_none());
     }

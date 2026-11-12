@@ -69,12 +69,63 @@
 </header>
 <div class="err" id="err" hidden></div>
 <main id="grid"><div class="empty">読み込み中…</div></main>
-<script type="module">
-import { App, applyDocumentTheme, applyHostStyleVariables, applyHostFonts } from "__EXT_APPS_URL__";
+<script>
+// MCP Apps のホストとの通信 (postMessage の JSON-RPC) を自前で持つ。ext-apps を CDN から読む形は
+// Claude のデスクトップアプリ (ローカルの MCP) で枠だけ出て中身が空になった (#62 の実機確認)。
+// 外から何も読まないので CSP にも依らない。メソッド名と版は ext-apps 1.7.5 の App に合わせている
+const PROTOCOL = "2026-01-26";
+const app = (() => {
+  let seq = 0;
+  const waiting = new Map();
+  const handlers = {};
+  const post = m => window.parent.postMessage(Object.assign({ jsonrpc: "2.0" }, m), "*");
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++seq;
+    waiting.set(id, { resolve, reject });
+    post({ id, method, params });
+  });
+  window.addEventListener("message", e => {
+    if (e.source !== window.parent) return;
+    const m = e.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id != null && !m.method) {  // 自分の request への応答
+      const w = waiting.get(m.id);
+      if (!w) return;
+      waiting.delete(m.id);
+      m.error ? w.reject(new Error(m.error.message || "error")) : w.resolve(m.result);
+      return;
+    }
+    if (m.id != null) {  // ホストからの request (teardown / ping) は空で返す
+      post({ id: m.id, result: {} });
+      return;
+    }
+    const h = handlers[m.method];
+    if (h) h(m.params || {});
+  });
+  // 高さを知らせる (autoResize 相当)
+  let lastH = 0;
+  const size = () => {
+    const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (h !== lastH) { lastH = h; post({ method: "ui/notifications/size-changed", params: { width: Math.ceil(document.documentElement.scrollWidth), height: h } }); }
+  };
+  new ResizeObserver(size).observe(document.documentElement);
+  return {
+    on: (method, fn) => { handlers[method] = fn; },
+    async connect() {
+      const r = await request("ui/initialize", {
+        appInfo: { name: "gh-actions-live-dashboard", version: "1.0.0" }, appCapabilities: {}, protocolVersion: PROTOCOL,
+      });
+      post({ method: "ui/notifications/initialized", params: {} });
+      size();
+      return (r && r.hostContext) || {};
+    },
+    callServerTool: p => request("tools/call", p),
+    openLink: p => request("ui/open-link", p),
+  };
+})();
 
 const TOOL = "actions_dashboard_data";
 const POLL_MS = 5000;
-const app = new App({ name: "gh-actions-live-dashboard", version: "1.0.0" }, {}, { autoResize: true });
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -150,21 +201,20 @@ $("grid").addEventListener("click", e => {
 });
 $("refresh").addEventListener("click", poll);
 
+// ホストの色 (CSS 変数) と明暗を当てる
 function applyHost(ctx) {
   if (!ctx) return;
-  if (ctx.theme) { applyDocumentTheme(ctx.theme); document.documentElement.dataset.theme = ctx.theme; }
-  if (ctx.styles && ctx.styles.variables) applyHostStyleVariables(ctx.styles.variables);
-  if (ctx.styles && ctx.styles.css && ctx.styles.css.fonts) applyHostFonts(ctx.styles.css.fonts);
+  if (ctx.theme) { document.documentElement.dataset.theme = ctx.theme; document.documentElement.style.colorScheme = ctx.theme; }
+  const vars = ctx.styles && ctx.styles.variables;
+  if (vars) for (const k in vars) if (vars[k]) document.documentElement.style.setProperty(k, vars[k]);
 }
 
-app.ontoolinput = p => { args = (p && p.arguments) || {}; };
+app.on("ui/notifications/tool-input", p => { args = p.arguments || {}; });
 // actions_dashboard の結果は要約のテキストだけなので、表示はすぐ自分で取りに行く
-app.ontoolresult = () => { poll(); };
-app.onhostcontextchanged = applyHost;
+app.on("ui/notifications/tool-result", () => { poll(); });
+app.on("ui/notifications/host-context-changed", applyHost);
 
-await app.connect();
-applyHost(app.getHostContext());
-poll();
+app.connect().then(ctx => { applyHost(ctx); poll(); }).catch(e => showErr("ホストに繋がらない: " + (e && e.message || e)));
 setInterval(poll, POLL_MS);
 </script>
 </body>
