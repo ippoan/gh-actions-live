@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux で拡張 (extension/) を headless Chromium に載せて常駐させる (#62)。Windows の Chrome の代わり。
+# Linux で拡張 (extension/) を headless Chromium に載せて常駐させる (#62)。拡張はここでだけ動かす。
 # systemd --user の gh-actions-browser.service から起動する。手で試すなら ./chromium.sh
 #
 # - snap の Chromium を使う (Playwright 同梱の Chromium は sandbox が使えず落ちる)。
@@ -16,7 +16,7 @@ DIR="$(dirname "$(readlink -f "$0")")"
 EXT="$(cd "$DIR/../extension" && pwd)"
 PROFILE="${GH_ACTIONS_BROWSER_PROFILE:-$HOME/snap/chromium/common/gh-actions-live-profile}"
 CHROMIUM="${GH_ACTIONS_BROWSER_CHROMIUM:-/snap/bin/chromium}"
-EXT_ID=oaadakmclelmnaieokjbhldfacfckaaj   # manifest.json の key から決まる (Windows と同じ)
+EXT_ID=oaadakmclelmnaieokjbhldfacfckaaj   # manifest.json の key から決まる (key を変えるとずれる)
 
 mkdir -p "$PROFILE"
 chmod 700 "$PROFILE"

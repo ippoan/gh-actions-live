@@ -40,58 +40,12 @@ async function openDashboard({ mode = 'popup' } = {}) {
   else                           Object.assign(opts, { type: 'popup', width: 1280, height: 820 });
 
   const win = await chrome.windows.create(opts);
-  // 保険 (#32): reload 直後の service worker から作ったウィンドウは Windows の foreground lock で
+  // 保険 (#32): reload 直後の service worker から作ったウィンドウは
   // 前面に来ないことがある (create の focused:true だけでは足りない)。もう一度前面要求を打つ。
   // state は popup 既定のときだけ 'normal' に戻す (fullscreen / maximized を潰さない)
   const focus = { focused: true, drawAttention: true };
   if (!opts.state) focus.state = 'normal';
   try { await chrome.windows.update(win.id, focus); } catch {}
-  return win.id;
-}
-
-// ---- cloudflared access login の承認ページを開く (#40) ----
-// `cloudflared access login <domain>` が出す URL をこちら側の Chrome で開き、人が「Approve」を
-// 押せるようにするだけの導線。トークンを取りに行くのは Linux 側の cloudflared 自身なので、
-// ブラウザは承認するだけでよく、Windows の Chrome で承認しても成立する。
-//
-// bridge は tailnet の 8799 で待ち受けていて認証が無い。そこへ到達できる者に
-// 「任意の URL を開かせる」と capability の穴になるので、**開ける URL を 4 条件で絞る**:
-// (1) https  (2) userinfo が無い  (3) ホストが accessLoginHosts に完全一致
-// (4) パスが /cdn-cgi/access/cli ちょうど。
-// (3) は **deny-by-default** — 未設定 / 空配列なら何も開かない。
-// 「設定が無いから全部通す」は、設定を入れ忘れた環境が一番危険になる最悪の既定なので取らない。
-const ACCESS_LOGIN_PATH = '/cdn-cgi/access/cli';
-
-// 通れば { url }、弾けば { error }。error にクエリを載せない
-// (Access の URL には token=<nonce> が乗っている。出すのはホスト名とパスまで)
-function parseAccessLoginUrl(raw, hosts) {
-  if (typeof raw !== 'string' || !raw.trim()) return { error: 'url required' };
-  let u;
-  try { u = new URL(raw); } catch { return { error: 'invalid url' }; }
-  if (u.protocol !== 'https:') return { error: `scheme not allowed: ${u.protocol} (https only)` };
-  // userinfo は入口で落とす。https://dtako.ippoan.org@evil.example.com/... は
-  // 文字列としては正規のホストに見えるのに、実際に開く先は evil.example.com になる
-  // (なりすまし)。u.host に userinfo は入らないので、ホスト検査だけでは防げない。
-  // 文言に username を含めない — そこに紛らわしいホスト名が入っている
-  if (u.username !== '' || u.password !== '') return { error: 'credentials in url not allowed' };
-  // 完全一致のみ。後方一致 (endsWith('.ippoan.org')) は evil-ippoan.org 型の取り違えを招くので採らない
-  const allow = Array.isArray(hosts) ? hosts.map(h => String(h).trim().toLowerCase()).filter(Boolean) : [];
-  if (!allow.length) return { error: 'accessLoginHosts not configured (deny by default)' };
-  if (!allow.includes(u.host.toLowerCase())) return { error: `host not allowed: ${u.host}` };
-  // new URL() は `..` を畳んでから pathname に入れる。その**正規化後**の値で完全一致を見る
-  // (前方一致だと .../cdn-cgi/access/cli/../../admin のような書き方を通してしまう)
-  if (u.pathname !== ACCESS_LOGIN_PATH) return { error: `path not allowed: ${u.host}${u.pathname}` };
-  return { url: u.href };
-}
-
-// 人が今すぐ Approve を押せる状態にするのが目的なので、既存ウィンドウを使い回さず
-// 毎回**前面の**ウィンドウで開く (openDashboard は自分のページ専用なので流用しない)。
-async function openApprovalWindow(url) {
-  const win = await chrome.windows.create({ url, type: 'popup', width: 980, height: 800, focused: true });
-  // #32 と同じ保険: create の focused:true だけでは Windows の foreground lock で前面に来ないことがある
-  try { await chrome.windows.update(win.id, { focused: true, drawAttention: true, state: 'normal' }); } catch {}
-  const tab = (win.tabs || [])[0];
-  if (tab) { try { await chrome.tabs.update(tab.id, { active: true }); } catch {} }
   return win.id;
 }
 
@@ -260,33 +214,23 @@ const bridge = createBridge({
   }
 });
 
-// ---- native messaging host (installer/host.ps1) ----
-// 拡張はディスクに書けないので、「更新」の実体はローカルの host が走らせる update.ps1。
-// MSI で入れていない (zip 展開) 端末には host が無く、sendNativeMessage が reject する。
-const NATIVE_HOST = 'jp.ippoan.gh_actions_live';
-async function nativeCall(cmd) {
-  try { return await chrome.runtime.sendNativeMessage(NATIVE_HOST, { cmd }); }
-  catch (e) { return { ok: false, error: String(e?.message || e), noHost: true }; }
-}
 // ---- 拡張の再起動は全部ここを通す (#30 / #32) ----
 // chrome.runtime.reload() は拡張のページを殺すが **ウィンドウ/タブは閉じない**。
 // 残ったタブは chrome-extension://invalid/ 相当の空白になり、URL が一致しなくなるので
 // onInstalled の reopenDashboard → openDashboard() は新しい popup を開く = 空ウィンドウが残る (#30)。
 // かといって先に tabs.remove で閉じると、復活が新規ウィンドウになり、reload 直後の
-// service worker からでは Windows の foreground lock で前面に出ない (#32、v0.0.25 で実測)。
+// service worker からでは前面に出ない (#32)。
 // → ダッシュボードのタブは **閉じずに about:blank に差し替える** (拡張ページは同じく死ぬ)。
 // ウィンドウは位置も z 順もそのまま生き残り、reload 後に onInstalled が **そのタブに**
 // ダッシュボードを読み込み直す (reopenTabId)。Chrome 最後の 1 枚でも Chrome が落ちない。
-// 経路 (再読込ボタン / update / 10 分ごとの self-update) は全部これを使う。
-async function reloadSelf({ reopen, note, delayMs = 300 } = {}) {
+// 経路 (ダッシュボードの再読込ボタン / bridge の reload) は全部これを使う。
+async function reloadSelf({ reopen, delayMs = 300 } = {}) {
   let tabs = [];
   try { tabs = await chrome.tabs.query({ url: chrome.runtime.getURL(DASH) }); } catch {}
   const reopenDashboard = reopen ?? tabs.length > 0;
   // 複数開いていれば先頭に読み込み直す。残りは about:blank のまま (新規ウィンドウは作らない)
   const reopenTabId = tabs.length ? tabs[0].id : null;
-  const patch = { reopenDashboard, reopenTabId };
-  if (note) patch.lastSelfUpdate = note;
-  try { await chrome.storage.local.set(patch); } catch {}
+  try { await chrome.storage.local.set({ reopenDashboard, reopenTabId }); } catch {}
   // タブが既に無い / 差し替えられない場合も **必ず reload まで進む**
   for (const t of tabs) {
     try { await chrome.tabs.update(t.id, { url: 'about:blank' }); } catch {}
@@ -297,26 +241,11 @@ async function reloadSelf({ reopen, note, delayMs = 300 } = {}) {
   return { blanked: tabs.length, reopenDashboard, reopenTabId };
 }
 
-// 更新: host に update.ps1 を走らせ、ディスクの版が変わったら自分をリロードする
-async function runUpdate() {
-  const r = await nativeCall('update');
-  // reload の完了は待たない (待つと ack が返せない)。閉じる → reload の順は reloadSelf が守る
-  if (r.ok && r.updated) reloadSelf({ note: `${r.from} -> ${r.to}` });
-  return r;
-}
-
 // ---- 設定 / 操作の共通ハンドラ (bridge / github.com / ダッシュボードから同じものを呼ぶ) ----
 // via: 'bridge' | 'external' (github.com タブ) | 'dashboard'
 async function handleCommand(msg, via = 'external') {
   switch (msg.command) {
     case 'open-dashboard': return { ok: true, windowId: await openDashboard({ mode: msg.mode || 'popup' }) };
-    case 'access-login': {
-      // cloudflared access login が出した承認 URL を開く。allowlist を通らなければ**開かない**
-      const { accessLoginHosts } = await chrome.storage.local.get('accessLoginHosts');
-      const parsed = parseAccessLoginUrl(msg.url, accessLoginHosts);
-      if (parsed.error) return { ok: false, error: parsed.error };
-      return { ok: true, windowId: await openApprovalWindow(parsed.url) };
-    }
     case 'status':
       // ダッシュボードが開いていればそちらも {type:'status'} を返す。こちらは background 視点
       return { ok: true, version: chrome.runtime.getManifest().version, dashboardOpen: await isDashboardOpen(), alive: await aliveDiag() };
@@ -340,12 +269,8 @@ async function handleCommand(msg, via = 'external') {
       // reloadSelf が「今ダッシュボードが開いているか」で決める (msg.reopen で上書き可)
       reloadSelf({ reopen: typeof msg.reopen === 'boolean' ? msg.reopen : undefined });
       return { ok: true, reloading: true, via };
-    case 'check-update':   await checkDiskVersion(); return { ok: true };
-    case 'update':         return await runUpdate();
-    case 'native-ping':    return await nativeCall('ping');
     case 'set-config': {
       // 形の検査は repo / config.json の取り込みと共通 (configPatch)。
-      // accessLoginHosts は完全一致 / deny-by-default。[] を入れれば無効化できる
       const patch = configPatch(msg);
       await chrome.storage.local.set(patch);
       // configRepo を変えたら次の取り込みを待たずに読みに行く
@@ -354,7 +279,7 @@ async function handleCommand(msg, via = 'external') {
     }
     case 'get-config':
       // remoteConfigStatus = repo の設定を最後に読みに行った結果 (ok / error / hash / at)
-      return { ok: true, ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl', 'accessLoginHosts', 'configRepo', 'remoteConfigStatus'])), version: chrome.runtime.getManifest().version };
+      return { ok: true, ...(await chrome.storage.local.get(['repos', 'notify', 'bridgeUrl', 'configRepo', 'remoteConfigStatus'])), version: chrome.runtime.getManifest().version };
     default: return { ok: false, error: 'unknown command: ' + msg.command };
   }
 }
@@ -367,21 +292,6 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
   handleCommand(msg || {}, 'external').then(sendResponse, e => sendResponse({ ok: false, error: String(e) }));
   return true;
 });
-
-// ---- 自動更新 (ディスク側は installer/update.ps1 が書き換える) ----
-// unpacked 拡張は chrome.runtime.getURL('manifest.json') でディスク上の manifest が読める。
-// 動いている版 (getManifest) と違えば update.ps1 が差し替えた後なので、自分をリロードする。
-// ダッシュボードを開いていたらリロード後に開き直す (reload で拡張ページは一度落ちる)。
-async function checkDiskVersion() {
-  try {
-    const r = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' });
-    const onDisk = (await r.json()).version;
-    const running = chrome.runtime.getManifest().version;
-    if (!onDisk || onDisk === running) return;
-    console.log('[bg] on-disk version', onDisk, '!= running', running, '-> reload');
-    await reloadSelf({ note: `${running} -> ${onDisk}` });
-  } catch (e) { console.warn('[bg] checkDiskVersion', e); }
-}
 
 // 保険 2 (#30): reload で死んだ拡張ページのタブ (chrome-extension://invalid/) の掃除。
 // reloadSelf が先に閉じているので通常は 0 件。旧版から上げた直後や、reload を
@@ -398,16 +308,16 @@ async function closeDeadExtensionTabs() {
 
 chrome.runtime.onInstalled.addListener(async (d) => {
   chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 });
-  chrome.alarms.create('self-update-check', { periodInMinutes: 10 });
+  chrome.alarms.create('seed-config-check', { periodInMinutes: 10 });
   await applySeedConfig((...a) => console.log('[bg]', ...a));
   bridge.ensure();
-  // 再読込ボタン / self-update の後にダッシュボードを開き直す (reason は unpacked の reload だと 'update')
+  // 再読込 (reloadSelf) の後にダッシュボードを開き直す (reason は unpacked の reload だと 'update')
   const { reopenDashboard, reopenTabId } = await chrome.storage.local.get(['reopenDashboard', 'reopenTabId']);
   if (reopenDashboard) {
     await chrome.storage.local.remove(['reopenDashboard', 'reopenTabId']);
     await closeDeadExtensionTabs();     // 旧版が残した空ウィンドウの掃除 (#30)
     // reloadSelf が about:blank に差し替えたタブに、**同じウィンドウのまま**読み込み直す (#32)。
-    // 前面要求も打つ (reload 直後は foreground lock で前面に来にくい → drawAttention も)。
+    // 前面要求も打つ (reload 直後は前面に来にくい → drawAttention も)。
     // タブが消えていた (ユーザーが閉じた等) ときだけ新しく開く
     if (reopenTabId != null) {
       try {
@@ -421,10 +331,10 @@ chrome.runtime.onInstalled.addListener(async (d) => {
     openDashboard({ mode: 'popup' });
   }
 });
-chrome.runtime.onStartup.addListener(async () => { await applySeedConfig(); bridge.ensure(); checkDiskVersion(); });
+chrome.runtime.onStartup.addListener(async () => { await applySeedConfig(); bridge.ensure(); });
 chrome.alarms.onAlarm.addListener(async a => {
   if (a.name === 'bridge-keepalive') bridge.ensure();
-  if (a.name === 'self-update-check') { await applySeedConfig(); checkDiskVersion(); }
+  if (a.name === 'seed-config-check') await applySeedConfig();
 });
 applySeedConfig().then(() => bridge.ensure());
 chrome.storage.onChanged.addListener(c => { if (c.bridgeUrl) bridge.connect(); });

@@ -1,4 +1,4 @@
-//! gh-actions-live の bridge。Windows Chrome 拡張と Claude Code (Linux) をつなぐ常駐リレー。
+//! gh-actions-live の bridge。拡張 (Linux の headless Chromium) と Claude Code をつなぐ常駐リレー。
 //!
 //! 口はすべて同じポート:
 //! - `ws /?role=extension`     拡張のダッシュボード。events / snapshot / hello を送り、コマンドを受ける
@@ -195,7 +195,7 @@ impl Hub {
             }
             "snapshot" => {
                 let list = msg["runs"].as_array().cloned().unwrap_or_default();
-                // 置き換えずに重ねる。ダッシュボードは複数 (Windows と Linux) 繋がりうるうえ、起動直後は
+                // 置き換えずに重ねる。ダッシュボードは複数 (タブが 2 枚開いた等) 繋がりうるうえ、起動直後は
                 // 読み込み前の空の snapshot を送るので、置き換えると写しが 0 runs に戻る (#62)
                 for r in &list {
                     self.runs.insert(run_key(r), r.clone());

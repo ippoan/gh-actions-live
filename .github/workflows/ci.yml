@@ -35,18 +35,6 @@ jobs:
             console.log("manifest OK:", m.name, m.version);
           '
 
-      - name: .ps1 は UTF-8 BOM 付きか (Windows PowerShell 5.1 は BOM 無しを ANSI で読んで文字化けする)
-        run: |
-          set -euo pipefail
-          fail=0
-          for f in $(git ls-files '*.ps1'); do
-            if [ "$(head -c3 "$f" | xxd -p)" != "efbbbf" ]; then
-              echo "::error file=$f::UTF-8 BOM が無い。日本語を含むと Windows PowerShell 5.1 で構文エラーになる (v0.0.10 で実害)"
-              fail=1
-            fi
-          done
-          exit $fail
-
       - name: 参照されている HTML/JS が実在するか
         run: |
           set -euo pipefail
@@ -58,7 +46,7 @@ jobs:
           done
           exit $fail
 
-  # Linux 側の常駐リレー (bridge/、Rust)。拡張の zip / MSI には入らない
+  # Linux 側の常駐リレー (bridge/、Rust)。拡張とは別に systemd --user で動く
   bridge:
     runs-on: ubuntu-latest
     defaults:
@@ -69,39 +57,22 @@ jobs:
       - name: cargo test
         run: cargo test --locked
 
-  # PR (non-draft) から dev prerelease を出す。merge を待たずに MSI を試せる。
-  dev-release:
-    needs: check
-    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
-    uses: ./.github/workflows/release.yml
-    # workflow_call には secret が自動で渡らない。inherit しないと
-    # CRX_PRIVATE_KEY が空のまま呼ばれて署名で落ちる。
-    secrets: inherit
-    with:
-      tag_name: dev-${{ github.run_number }}
-      target_commitish: ${{ github.event.pull_request.head.sha }}
-
-  # CI green (dev release の MSI / CRX ビルド成功込み) → squash auto-merge。
+  # CI green → squash auto-merge。
   # org 標準の reusable (cc-webreview-ext / cdp-relay と同じ呼び方)。
   # deploy 系 job は本 repo に無いので deploy gate はそのまま通る。
-  #
-  # merge されると main への push で Release が自動採番されて出る
-  # (release.yml)。つまり PR を出して CI が緑になれば、そのまま
-  # 新しい版が Latest として公開される。
+  # Release は出さない (拡張は Linux の headless Chromium が作業ツリーの extension/ を直接読む)。
   auto-merge:
     name: Auto Merge
-    needs: [check, bridge, dev-release]
+    needs: [check, bridge]
     if: >-
       always() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.draft == false &&
       needs.check.result == 'success' &&
-      needs.bridge.result == 'success' &&
-      needs['dev-release'].result == 'success'
+      needs.bridge.result == 'success'
     uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
     permissions:
       contents: write
       pull-requests: write
-    # CI_APP_ID / CI_APP_PRIVATE_KEY (org secret) を渡す。App token でないと
-    # merge の push actor が github-actions[bot] になり、release.yml が発火しない。
+    # CI_APP_ID / CI_APP_PRIVATE_KEY (org secret) を渡す (merge は App token で打つ)。
     secrets: inherit

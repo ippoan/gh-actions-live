@@ -1,26 +1,15 @@
 # CLAUDE.md — ippoan/gh-actions-live
 
-Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (`bridge/`)。
+Chrome 拡張 (`extension/`。Linux の headless Chromium = `linux-browser/` が作業ツリーから直接読む) + Linux 側リレー (`bridge/`)。
 使い方・運用は `gh-actions-live` skill (ippoan/claude-skills)、設計の経緯は README と issue。
 
 ## repo-policy
-- **PR を出して CI が緑 = auto-merge = Release 自動採番 (main push ごとに vX.Y.Z)**。
-  merge 前に止めたいなら draft で出す。tag を手で打たない (二重採番)
+- **PR を出して CI が緑 = auto-merge**。merge 前に止めたいなら draft で出す。Release / tag は出さない
 - `Closes #N` 禁止、`Refs #N`。branch は `<type>-<topic>` か `<issue>-<type>-<topic>`
 - merge 済み branch への push は hook が止める。新 branch は **別コマンドで** `git checkout main` してから切る
-- dev prerelease (`dev-<run>`) は PR の CI が出す。`secrets: inherit` を外すと CRX 署名が空で落ちる
 
 ## 触るときの罠 (全部実機で踏んだ)
-- `installer/*.ps1` は **UTF-8 BOM 必須** (5.1 が Shift_JIS で読む)。CI で検査。CRLF なので
-  python で複数行置換するときは `\r\n` を正規化してから
-- `update.ps1` は Release 資産 (octet-stream) を `Get-Text` で byte[] → 文字列にしてから使う
-- `update.ps1` / `host.ps1` / `host.bat` は zip に入らない。Release 資産として出し、`update.ps1` が
-  実行前に自己更新する。この仕組みを壊すと MSI 入れ直しが要る
-- `main.wxs`: `File/@Source` は cwd 基準 (`$(sys.SOURCEFILEDIR)` を付ける)、`Files/@Include` は wxs 基準。
-  HKLM 系 component は `Bitness="always64"` + `ALLUSERS=1` 条件。WiX は **5.0.2 固定** (6+ は OSMF EULA)
-- `manifest.json`: `host_permissions` に `release-assets.githubusercontent.com` / `objects.githubusercontent.com`
-  (Release 資産のリダイレクト先) が要る。
-  `key` を変えると拡張 ID が変わり MSI のポリシー / native host manifest / README が全部ずれる
+- `manifest.json`: `key` を変えると拡張 ID が変わり、`linux-browser/chromium.sh` の `EXT_ID` と README がずれる
 - **alive の WebSocket は github.com のタブ (content script `alive-relay.js`) が持つ。**
   拡張ページ (`chrome-extension://`) から張ると Origin で弾かれ握手直後に 1006。
   DNR の `modifyHeaders` では websocket 握手の Origin を変えられない (v0.0.19 で実測・失敗)。
@@ -32,7 +21,7 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   reload はページを殺すがウィンドウは閉じないので、何もせず reload → `onInstalled` の
   `reopenDashboard` が新しい popup を開く = 空ウィンドウが 1 枚残る (#30)。
   かといって `tabs.remove` で閉じると復活が `windows.create` の新規ウィンドウになり、reload 直後の
-  service worker からでは Windows の foreground lock で**前面に出ない** (#32、v0.0.25 で実測)。
+  service worker からでは**前面に出ない** (#32)。
   差し替えならウィンドウの位置も z 順もそのままで、Chrome 最後の 1 枚でも Chrome が落ちない。
   ダッシュボードの「再読込」は background へ `command:'reload'` を送るだけ (自分で reload しない)。
   保険として `openDashboard()` は既存タブに `{target:'dashboard',type:'ping'}` を打ち、
@@ -75,11 +64,9 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   **GitHub の API を叩く経路を足さない** (レート制限を避けるためブラウザから取る、がユーザーの決定)
 - **設定の正本は private repo `ippoan/gh-actions-live-config` の `config.json`** (`seed-config.js` が github.com の cookie で raw を読む)。
   取り込みは**内容ハッシュが変わったときだけ** (毎回上書きすると設定画面 / `set-config` の値が 10 分で戻る)。
-  書いたキーだけ上書きするので、`accessLoginHosts: []` のような空値を置くと全 PC の値を消す。
+  書いたキーだけ上書きするので、`repos: []` のような空値を置くと全 PC の値を消す。
   キーの形の検査は `configPatch` 1 か所 (background / dashboard の `set-config` も使う)。
   private の raw は `raw.githubusercontent.com` へリダイレクトするので `host_permissions` から外さない
-- 非管理 Windows では HKLM の `ExtensionSettings` を Chrome が捨てる (仕様)。
-  「MSI で入らない」は #9 を先に読む
 - `mods/pr-bridge-watch` (Claude Mod) の module は Node も DOM も無い環境で動く。外界は全部 `$`
   (`$.process.run` / `$.http.fetch` / `$.tool.call`) 経由。判定は `pr-watch.ts` に純粋関数で置き、
   import は `.ts` 拡張子付き (Node 24 の `npm test` が直接読むため)。型 (`/plugin-types`) は build ごとに
@@ -100,5 +87,5 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   2FA は GitHub Mobile (パスキーは headless で使えない)。数字は JS で後から描かれるので待って読む
 
 ## 検証
-- CI: JS 構文 / manifest 整合 / `.ps1` BOM / 参照ファイル実在 / bridge の `cargo test`。MSI ビルドは windows-latest
-- 実機でしか分からないもの: MSI の配置先・native host・alive の接続。bridge の `status` で見る
+- CI: JS 構文 / `npm test` / manifest 整合 / 参照ファイル実在 / bridge の `cargo test`
+- 実機でしか分からないもの: alive の接続・reload 後の復帰。bridge の `status` で見る

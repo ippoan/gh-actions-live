@@ -1,5 +1,5 @@
 // 設定の外部ソースを chrome.storage に取り込む。2 か所あり、この順に読む:
-//   1. 自分のフォルダの config.json (インストーラーが書く。その PC だけの値)
+//   1. 自分のフォルダ (extension/) の config.json (任意。置いた PC だけの値)
 //   2. GitHub の private repo の config.json (全 PC 共通の正本。他の PC からも見える / 直せる)
 // どちらも内容のハッシュを覚えておき、変わったときだけ上書きする。
 // なので設定画面や bridge の set-config で入れた値は、ソース側が次に変わるまで残る。
@@ -70,9 +70,6 @@ export function configPatch(cfg) {
   if (Array.isArray(cfg.repos)) patch.repos = cfg.repos.map(String).filter(Boolean);
   if (typeof cfg.bridgeUrl === 'string') patch.bridgeUrl = cfg.bridgeUrl.trim();
   if (typeof cfg.notify === 'boolean') patch.notify = cfg.notify;
-  if (Array.isArray(cfg.accessLoginHosts)) {
-    patch.accessLoginHosts = cfg.accessLoginHosts.map(h => String(h).trim().toLowerCase()).filter(Boolean);
-  }
   if (typeof cfg.configRepo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(cfg.configRepo.trim())) {
     patch.configRepo = cfg.configRepo.trim();
   }
