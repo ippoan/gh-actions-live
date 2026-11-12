@@ -57,6 +57,8 @@
   .when { grid-column:3; grid-row:1/3; text-align:right; color:var(--dim); font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .tag { display:inline-block; font-family:var(--mono); font-size:10.5px; padding:0 .35rem; border-radius:999px; border:1px solid var(--line); color:var(--dim); margin-left:.35rem; }
   .empty { padding:3rem 1rem; text-align:center; color:var(--dim); grid-column:1/-1; }
+  #diag { margin:0 .9rem .9rem; color:var(--dim); font-size:11px; }
+  #diag pre { white-space:pre-wrap; word-break:break-all; font:11px/1.4 var(--mono); }
 </style>
 </head>
 <body>
@@ -70,11 +72,13 @@
 </header>
 <div class="err" id="err" hidden></div>
 <main id="grid"><div class="empty">読み込み中…</div></main>
+<details id="diag"><summary>ホスト診断</summary><pre id="diag-body"></pre></details>
 <script>
 // MCP Apps のホストとの通信 (postMessage の JSON-RPC) を自前で持つ。ext-apps を CDN から読む形は
 // Claude のデスクトップアプリ (ローカルの MCP) で枠だけ出て中身が空になった (#62 の実機確認)。
 // 外から何も読まないので CSP にも依らない。メソッド名と版は ext-apps 1.7.5 の App に合わせている
 const PROTOCOL = "2026-01-26";
+let initResult = null;  // ui/initialize の応答 (ホスト診断に出す)
 const app = (() => {
   let seq = 0;
   const waiting = new Map();
@@ -93,7 +97,7 @@ const app = (() => {
       const w = waiting.get(m.id);
       if (!w) return;
       waiting.delete(m.id);
-      m.error ? w.reject(new Error(m.error.message || "error")) : w.resolve(m.result);
+      m.error ? w.reject(Object.assign(new Error(m.error.message || "error"), { code: m.error.code })) : w.resolve(m.result);
       return;
     }
     if (m.id != null) {  // ホストからの request (teardown / ping) は空で返す
@@ -116,6 +120,7 @@ const app = (() => {
       const r = await request("ui/initialize", {
         appInfo: { name: "gh-actions-live-dashboard", version: "1.0.0" }, appCapabilities: {}, protocolVersion: PROTOCOL,
       });
+      initResult = r;
       post({ method: "ui/notifications/initialized", params: {} });
       size();
       return (r && r.hostContext) || {};
@@ -195,10 +200,27 @@ function showErr(m) { $("err").hidden = !m; $("err").textContent = m; }
 // ホストによってはウィジェットからの tools/call を受けない (Claude Code は "Method not found")。
 // そのときは表示をツールの結果 (_meta) のままにし、経過時間だけ数え上げる
 let canPoll = true;
+// ホスト診断: ui/initialize の応答と最初の tools/call の結果 (ホストが serverTools を申告しているか等の実物確認)
+let firstCall = null;
+function showDiag() {
+  const r = initResult || {}, c = r.hostContext || {};
+  const pick = k => c[k] === undefined ? null : c[k];
+  $("diag-body").textContent = JSON.stringify({
+    protocolVersion: r.protocolVersion ?? null, hostInfo: r.hostInfo ?? null, hostCapabilities: r.hostCapabilities ?? null,
+    hostContext: { toolInfo: pick("toolInfo"), displayMode: pick("displayMode"), availableDisplayModes: pick("availableDisplayModes"),
+                   platform: pick("platform"), userAgent: pick("userAgent") },
+    firstCall,
+  }, null, 2);
+}
 async function poll() {
   if (!canPoll) { render(); return; }
-  try { take(await app.callServerTool({ name: TOOL, arguments: args })); }
+  try {
+    const r = await app.callServerTool({ name: TOOL, arguments: args });
+    if (!firstCall) { firstCall = "ok"; showDiag(); }
+    take(r);
+  }
   catch (e) {
+    if (!firstCall) { firstCall = { code: (e && e.code) ?? null, message: String(e && e.message || e) }; showDiag(); }
     const m = String(e && e.message || e);
     if (/method not found/i.test(m) && data) { canPoll = false; showErr(""); note = "このホストではウィジェットから更新できない — 最新はもう一度 actions_dashboard を呼ぶ"; render(); return; }
     showErr("更新に失敗: " + m);
@@ -227,7 +249,7 @@ app.on("ui/notifications/tool-input", p => { args = p.arguments || {}; });
 app.on("ui/notifications/tool-result", r => { if (parse(r)) take(r); else poll(); });
 app.on("ui/notifications/host-context-changed", applyHost);
 
-app.connect().then(ctx => { applyHost(ctx); poll(); }).catch(e => showErr("ホストに繋がらない: " + (e && e.message || e)));
+app.connect().then(ctx => { applyHost(ctx); showDiag(); poll(); }).catch(e => showErr("ホストに繋がらない: " + (e && e.message || e)));
 setInterval(poll, POLL_MS);
 </script>
 </body>
