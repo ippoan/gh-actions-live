@@ -1,0 +1,16 @@
+# systemd --user の unit。拡張を載せた headless Chromium を常駐させる (#62)。
+#   ln -sfn <clone>/linux-browser/chromium.sh ~/.local/bin/gh-actions-browser
+#   cp <clone>/linux-browser/gh-actions-browser.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now gh-actions-browser
+# 初回とログインが切れたときは <clone>/linux-browser/github-login.sh (README)
+[Unit]
+Description=gh-actions-live browser (拡張を載せた headless Chromium)
+After=network-online.target gh-actions-bridge.service
+
+[Service]
+ExecStart=%h/.local/bin/gh-actions-browser
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

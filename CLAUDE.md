@@ -87,6 +87,12 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   (hook 発の Monitor に分類器が判定を返さない) → desktop なら引数つきで「自分で張れ」を返す (model の張った ws Monitor は通る)、
   それ以外は 1 行の事実だけ。desktop の Monitor は `persistent` 無し・`timeout_ms` 30 分上限 (CLI の引数だと schema で弾かれる)。無判定の判定は文面頼み (`isAutoModeNoVerdict`) → 文面が変わったらテストの `NO_VERDICT` ごと直す (#50)
 
+- **`linux-browser/` は拡張を Linux の headless Chromium に載せる一式 (#62)。** snap の Chromium (Playwright 同梱は sandbox 無しで落ちる)、
+  プロファイルは `~/snap/chromium/common/` (snap は `$HOME` の隠しディレクトリを読めない)、CDP は `127.0.0.1:9223` だけ
+  (Tailscale の IP 等へ出すと分類器に [Expose Local Services] で止められるし、ログイン済みブラウザの全権になる)。
+  同じプロファイルを 2 つの Chromium で開けない (SingletonLock) ので、ログインは常駐プロセスの CDP を使う (`github-login.sh`)。
+  2FA は GitHub Mobile (パスキーは headless で使えない)。数字は JS で後から描かれるので待って読む
+
 ## 検証
 - CI: JS 構文 / manifest 整合 / `.ps1` BOM / 参照ファイル実在 / bridge の `cargo test`。MSI ビルドは windows-latest
 - 実機でしか分からないもの: MSI の配置先・native host・alive の接続。bridge の `status` で見る

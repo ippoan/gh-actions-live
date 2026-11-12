@@ -199,6 +199,7 @@ installer/main.wxs  MSI (WiX v4+、perUserOrMachine)。配置 + 自動更新タ�
 installer/update.ps1 更新スクリプト (native host / 手動 / 任意でタスク登録)
 installer/host.ps1   native messaging host (「更新」ボタンの実体)
 bridge/             Claude Code (Linux) 側の常駐リレー (Rust / systemd --user。下記)
+linux-browser/      拡張を Linux の headless Chromium で常駐させる一式 (Windows の Chrome の代わり。下記)
 mods/pr-bridge-watch Claude Mod: PR を作ったら branch の CI を bridge の /watch に繋ぐ (下記)
 .claude-plugin/     上の mod を配る plugin marketplace
 ```
@@ -211,6 +212,32 @@ mods/pr-bridge-watch Claude Mod: PR を作ったら branch の CI を bridge の
   形が分かったら `ws.onmessage` を絞り込める。
 - `data-channel` のトークンは発行時刻 `t` 入りの時限。20 分ごとにページを取り直して更新する。
 - **未文書の内部プロトコル**なので、GitHub 側の変更で黙って壊れうる。
+
+## Linux で拡張を動かす (Windows の Chrome の代わり、#62)
+
+拡張 (`extension/`) をそのまま、bridge と同じ Linux の headless Chromium に載せて常駐させる。データの取り方は
+Windows と同じ (ログイン済みのブラウザが Actions ページと alive の push を読む。GitHub の API は叩かない)。
+拡張 ID も同じ (`manifest.json` の `key`)。設定は共通設定 (`config.json`) から入る。
+
+```
+# 1 回だけ
+ln -sfn "$PWD/linux-browser/chromium.sh" ~/.local/bin/gh-actions-browser
+cp linux-browser/gh-actions-browser.service ~/.config/systemd/user/
+mkdir -p ~/.config/gh-actions-live && echo 'GITHUB_USER=<GitHub のユーザー名>' > ~/.config/gh-actions-live/browser.env
+systemctl --user daemon-reload && systemctl --user enable --now gh-actions-browser
+linux-browser/github-login.sh        # GitHub にログイン (下)
+```
+
+**ログイン** (初回と、切れたとき): `linux-browser/github-login.sh` を端末で起動し、パスワードを貼り付ける (表示されない)。
+2FA は GitHub Mobile を選ぶので、アプリで承認する (数字を聞かれたら端末に出る数字を選ぶ)。ログイン済みなら何も聞かずに終わる。
+Windows のクリップボードからなら `Get-Clipboard | ssh <user>@<host> <clone>/linux-browser/github-login.sh`。
+パスワードは SSH の中だけを通り、どこにも書かない。パスキー / セキュリティキーは headless では使えない。
+`linux-browser/github-logout.mjs` はこのブラウザだけをサインアウトする (他の端末は触らない。ログインの試し用)。
+
+- CDP は `127.0.0.1:9223` だけ。ログイン用のスクリプトはここに繋ぐ。**外 (Tailscale の IP 等) へ出さない** — ログイン済みブラウザの全権になる
+- snap の Chromium を使う。Playwright 同梱の Chromium は sandbox が使えず起動しない。snap は `$HOME` 直下の隠しディレクトリを読めないので
+  プロファイルは `~/snap/chromium/common/gh-actions-live-profile`
+- GitHub のログインは使っている限り延長される (失効は約 2 週間の無操作か、パスワード変更・セッションの revoke)
 
 ## Claude から設定を入れる (github.com 経由)
 
