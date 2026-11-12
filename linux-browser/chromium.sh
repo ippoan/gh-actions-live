@@ -6,7 +6,11 @@
 #   snap は $HOME 直下の隠しディレクトリを読めないので、プロファイルは ~/snap/chromium/common/ に置く
 # - CDP は 127.0.0.1:9223 だけ。github-login.sh / github-logout.mjs がここに繋ぐ。外には出さない
 # - User-Agent から HeadlessChrome を外す (GitHub のログイン画面で弾かれないように)
-# - 開くのはダッシュボード (bridge に繋ぐ本体) と github.com (alive の購読タブ・ログイン用)
+# - ダッシュボード (bridge に繋ぐ本体) は起動後に CDP の /json/new で開く。起動時の URL に渡すと、
+#   拡張の読み込みより先に開いてタブの中身が空のまま bridge に繋がらない。headless は起動時の URL を
+#   1 つしか受けない (2 つ渡すと "Multiple targets are not supported in headless mode" で status 13)。
+#   前回のタブが復元されていたら閉じてから開く (ダッシュボードが 2 枚だと bridge に 2 つ繋がる)。
+#   github.com のタブ (alive の購読) は background が自分で開く
 set -euo pipefail
 DIR="$(dirname "$(readlink -f "$0")")"
 EXT="$(cd "$DIR/../extension" && pwd)"
@@ -16,7 +20,7 @@ EXT_ID=oaadakmclelmnaieokjbhldfacfckaaj   # manifest.json の key から決ま�
 
 mkdir -p "$PROFILE"
 chmod 700 "$PROFILE"
-exec "$CHROMIUM" \
+"$CHROMIUM" \
   --headless=new \
   --user-data-dir="$PROFILE" \
   --password-store=basic \
@@ -25,5 +29,16 @@ exec "$CHROMIUM" \
   --remote-debugging-port=9223 \
   --disable-extensions-except="$EXT" \
   --load-extension="$EXT" \
-  "chrome-extension://$EXT_ID/dashboard.html" \
-  https://github.com/
+  about:blank &
+PID=$!
+trap 'kill "$PID" 2>/dev/null' TERM INT
+
+CDP=http://127.0.0.1:9223
+for _ in $(seq 60); do curl -sf "$CDP/json/version" >/dev/null && break; sleep 1; done
+sleep 3   # 拡張 (service worker) の読み込みを待つ
+DASH="chrome-extension://$EXT_ID/dashboard.html"
+for id in $(curl -sf "$CDP/json/list" | grep -o '"id": *"[^"]*"\|"url": *"[^"]*"' | paste - - | grep -F "$DASH" | sed 's/.*"id": *"\([^"]*\)".*/\1/'); do
+  curl -sf "$CDP/json/close/$id" >/dev/null || true
+done
+curl -sf -X PUT "$CDP/json/new?$DASH" >/dev/null || echo "[gh-actions-browser] ダッシュボードを開けなかった" >&2
+wait "$PID"
