@@ -109,9 +109,11 @@ pub fn dashboard(order: &[String], runs: &HashMap<String, Value>, connected: boo
         }
     }
     if let Some(since) = q.since {
-        // 時刻は ISO 8601 の文字列なので文字列で比べる。その時刻以降の run が無い repo は出さない
+        // 時刻は ISO 8601 の文字列なので文字列で比べる。その時刻以降の run が無い repo は出さない。
+        // 時刻の無い run は残す: 拡張の push (events) で新しく現れた run には at が無く (snapshot の行にしか無い)、
+        // それはまさに PR を出した直後の CI なので落とすと肝心の run が消える (#62、CI #122 で踏んだ)
         for (_, list) in by_repo.iter_mut() {
-            list.retain(|r| run_time(r).as_str() >= since);
+            list.retain(|r| { let t = run_time(r); t.is_empty() || t.as_str() >= since });
         }
         by_repo.retain(|(_, list)| !list.is_empty());
     }
@@ -323,6 +325,10 @@ mod tests {
         let d = dashboard(&[], &rs, true, &Query { repo: None, since: Some("2026-11-12T02:00:00Z") });
         assert_eq!(names(&d), ["o/a-s3", "o/b", "o/a"]);
         assert_eq!(d["repos"][2]["runs"].as_array().unwrap().len(), 1, "o/a は 02:00 の run だけ");
+        // 時刻の無い run (push で新しく現れたもの) は since で絞っても残す
+        rs.insert("y".into(), json!({ "repo": "o/c", "workflow": "CI", "run": "9", "status": "queued" }));
+        let d = dashboard(&[], &rs, true, &Query { repo: Some("c"), since: Some("2026-11-12T23:00:00Z") });
+        assert_eq!(names(&d), ["o/c"]);
         let d = dashboard(&[], &rs, true, &Query { repo: Some("ippoan/none"), since: None });
         assert!(d["repos"].as_array().unwrap().is_empty());
     }
