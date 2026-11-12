@@ -11,6 +11,7 @@ import {
   isPrCreateCommand,
   isSelfArchive,
   isStopRequest,
+  isTaskGone,
   pullRefsOf,
   SEND_MESSAGE_TOOL,
   statusUrlOf,
@@ -65,6 +66,9 @@ export const register: Register = (on, options) => {
   const watches = new Map<string, Watch>()
   let reconciling = false
 
+  // bridge の再起動等で Monitor が先に終わっていると TaskStop は "No task found" を返す。止める物が無いだけで失敗ではない
+  const gone = (w: Watch, why: string) => `pr-bridge-watch: ${w.pr} ${why} → Monitor (task ${w.taskId}) は既に終わっていた`
+
   const stopWatch = async (host: Host, key: string, why: string) => {
     const w = watches.get(key)
     if (w === undefined) return
@@ -76,10 +80,16 @@ export const register: Register = (on, options) => {
       host.log(
         failed === undefined
           ? `pr-bridge-watch: ${w.pr} ${why} → Monitor (task ${w.taskId}) を止めた`
-          : `pr-bridge-watch: ${w.pr} ${why} → Monitor (task ${w.taskId}) を止められなかった (${failed})`,
+          : r.deny === undefined && isTaskGone(r.text ?? '')
+            ? gone(w, why)
+            : `pr-bridge-watch: ${w.pr} ${why} → Monitor (task ${w.taskId}) を止められなかった (${failed})`,
       )
     } catch (err) {
-      host.log(`pr-bridge-watch: ${w.pr} ${why} → Monitor (task ${w.taskId}) を止められなかった (${String(err)})`)
+      host.log(
+        isTaskGone(String(err))
+          ? gone(w, why)
+          : `pr-bridge-watch: ${w.pr} ${why} → Monitor (task ${w.taskId}) を止められなかった (${String(err)})`,
+      )
     }
   }
 

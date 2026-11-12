@@ -82,6 +82,11 @@ export function isLiveWorkRefusal(text: string): boolean {
   return /was not archived/i.test(text) && /live work|background (task|work)|still working/i.test(text)
 }
 
+/** TaskStop が「その task はもう無い」で返った応答か (Monitor が先に終わっていた。bridge の再起動で 1006 等) */
+export function isTaskGone(text: string): boolean {
+  return /no task found/i.test(text)
+}
+
 /** 相手の pr-bridge-watch が拾って Monitor を全部止める合図 (send_message の本文に入れる) */
 export const STOP_MARKER = '[pr-bridge-watch:stop]'
 
