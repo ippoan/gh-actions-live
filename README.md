@@ -107,6 +107,8 @@ reload は background の `reloadSelf()` に一本化してあり、**先にダ�
 1. ダッシュボードを開いた状態で「再読込」→ **同じウィンドウのまま**中身が復活すること
    (空白のウィンドウが増えていない / ウィンドウが消えていない)
 2. bridge から `{"command":"reload"}` を送っても同じこと
+3. 数秒後に `curl -s localhost:8799/` の `clients` に `extension-bg@127.0.0.1` と `extension@127.0.0.1` が戻ること
+   (戻らなければデベロッパー モードがオフ。下の「Linux で拡張を動かす」)
 
 ## CI
 
@@ -157,6 +159,10 @@ Windows のクリップボードからなら `Get-Clipboard | ssh <user>@<host> 
 - CDP は `127.0.0.1:9223` だけ。ログイン用のスクリプトはここに繋ぐ。**外 (Tailscale の IP 等) へ出さない** — ログイン済みブラウザの全権になる
 - snap の Chromium を使う。Playwright 同梱の Chromium は sandbox が使えず起動しない。snap は `$HOME` 直下の隠しディレクトリを読めないので
   プロファイルは `~/snap/chromium/common/gh-actions-live-profile`
+- プロファイルの**デベロッパー モードをオンにする** (`chromium.sh` が起動直後に `linux-browser/developer-mode.mjs` で入れる)。
+  Chrome 133 からパッケージ化されていない拡張はデベロッパー モードのときだけ有効で、オフのまま「再読込」/ bridge の `reload` を打つと
+  拡張が `unsupportedDeveloperExtension` で無効化されて bridge に戻らない (起動時は `--load-extension` の分だけ有効なので気づきにくい)。
+  そうなったら `node linux-browser/developer-mode.mjs` で有効に戻る
 - GitHub のログインは使っている限り延長される (失効は約 2 週間の無操作か、パスワード変更・セッションの revoke)
 
 ## Claude から設定を入れる (github.com 経由)

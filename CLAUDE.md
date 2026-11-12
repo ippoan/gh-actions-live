@@ -85,6 +85,11 @@ Chrome 拡張 (`extension/`。Linux の headless Chromium = `linux-browser/` が
   (Tailscale の IP 等へ出すと分類器に [Expose Local Services] で止められるし、ログイン済みブラウザの全権になる)。
   同じプロファイルを 2 つの Chromium で開けない (SingletonLock) ので、ログインは常駐プロセスの CDP を使う (`github-login.sh`)。
   2FA は GitHub Mobile (パスキーは headless で使えない)。数字は JS で後から描かれるので待って読む
+  **プロファイルのデベロッパー モードはオンにしておく** (`chromium.sh` が起動直後に `developer-mode.mjs` で入れる)。オフだと
+  `chrome.runtime.reload()` (再読込 / bridge の `reload`) で拡張が UNPACKED として入り直し、`unsupportedDeveloperExtension`
+  (disable_reasons `1<<24`) で無効化されて service worker ごと消える (Chrome 133+ の「unpacked はデベロッパー モードのときだけ」)。
+  起動時は `--load-extension` の分だけ有効になるので、壊れるのは reload したときだけ。止まったら
+  `node linux-browser/developer-mode.mjs` で戻る (再起動不要)
 
 ## 検証
 - CI: JS 構文 / `npm test` / manifest 整合 / 参照ファイル実在 / bridge の `cargo test`

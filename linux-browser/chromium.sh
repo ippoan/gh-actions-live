@@ -5,6 +5,7 @@
 # - snap の Chromium を使う (Playwright 同梱の Chromium は sandbox が使えず落ちる)。
 #   snap は $HOME 直下の隠しディレクトリを読めないので、プロファイルは ~/snap/chromium/common/ に置く
 # - CDP は 127.0.0.1:9223 だけ。github-login.sh / github-logout.mjs がここに繋ぐ。外には出さない
+# - 起動後に developer-mode.mjs でデベロッパー モードをオンにする (オフだと reload で拡張が無効化される)
 # - User-Agent から HeadlessChrome を外す (GitHub のログイン画面で弾かれないように)
 # - ダッシュボード (bridge に繋ぐ本体) は起動後に CDP の /json/new で開く。起動時の URL に渡すと、
 #   拡張の読み込みより先に開いてタブの中身が空のまま bridge に繋がらない。headless は起動時の URL を
@@ -36,6 +37,9 @@ trap 'kill "$PID" 2>/dev/null' TERM INT
 CDP=http://127.0.0.1:9223
 for _ in $(seq 60); do curl -sf "$CDP/json/version" >/dev/null && break; sleep 1; done
 sleep 3   # 拡張 (service worker) の読み込みを待つ
+# デベロッパー モードをオンにする。オフのままだと chrome.runtime.reload() (ダッシュボードの「再読込」/ bridge の
+# reload) で拡張が UNPACKED として入り直し、unsupported developer extension で無効化されて戻らない
+node "$DIR/developer-mode.mjs" || true
 DASH="chrome-extension://$EXT_ID/dashboard.html"
 for id in $(curl -sf "$CDP/json/list" | grep -o '"id": *"[^"]*"\|"url": *"[^"]*"' | paste - - | grep -F "$DASH" | sed 's/.*"id": *"\([^"]*\)".*/\1/'); do
   curl -sf "$CDP/json/close/$id" >/dev/null || true
