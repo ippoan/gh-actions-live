@@ -301,7 +301,7 @@ bridge 自体の出力 (全 repo の変化・接続ログ) は `journalctl --use
   **ウィジェットの HTML を変えたら、claude.ai の設定 → Connectors で connector を切断 → 接続し直す。** claude.ai は
   接続したときにウィジェット (`ui://`) を先読みして保存し、セッションをまたいで使い回す。bridge を入れ替えても、
   新しいセッションでも、繋ぎ直すまで古い HTML が描かれる (#62 で 3 回踏んだ。見出しの版で見分けられる)。
-  Code タブのアプリはウィジェットからの `tools/call` を受けない (`Method not found`) ので、Code タブでは自動更新されない。
+  Code タブのアプリはウィジェットからの `tools/call` を受けない (`Method not found`) が、`serverTools` の無いホストではウィジェットが `resources/read` (`gh-actions-live://dashboard?repo=&since=`) で 5 秒ごとに更新する (#74)。
   データは `actions_dashboard` の結果の `_meta` で渡し、最新にしたいときは呼び直す
   読み取り専用 (書き込みの口は無い)。登録は user scope で 1 回:
   ```
