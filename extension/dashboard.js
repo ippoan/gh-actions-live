@@ -400,6 +400,7 @@ async function boot() {
     bridge.send({ type: 'login', ...changed });
   }
   render();
+  bridge.send({ type: 'snapshot', runs: snapshot() });   // 読み込み後の状態で bridge を上書きする。reload 直後は hello 時の snapshot が 0 件で、その間に終わった run が bridge に「実行中」のまま残った
   alive.onBoot();    // 未接続なら無条件で close → connect (CONNECTING で固まった relay もここで叩き直す)
   bridge.ensure();
 }
