@@ -65,6 +65,8 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   モデル向けの `actions_dashboard` に `structuredContent` を付けない (Claude Code はそれをテキストの代わりにモデルへ渡し、
   全 repo 分 9 万字が上限超えで退避された)。ビューのデータは app 専用の `actions_dashboard_data` から。
   見た目と並びは `extension/dashboard.js` の `card()` / `render()` / `MAX_CARDS_PER_REPO` と揃える (片方だけ変えない)。
+  右側パネル (`mods/pr-bridge-watch/hooks/pane.tsx`) も `resources/read` で読む。見た目と `ago`/`elapsed` は widget/dashboard.html と揃える
+  (`pr-watch.ts` の `ago`/`elapsed` を widget から取り出して突き合わせるテストがある)。
   **ウィジェットの HTML を変えたら connector を繋ぎ直す** (claude.ai は接続時に `ui://` を先読みして保存し、セッションをまたいで
   使い回す。bridge の入れ替えでも新しいセッションでも読み直さない)。URI と見出しの版は HTML のハッシュで変わる (`view_uri` / `view_version`)。
   Code タブはウィジェットからの `tools/call` を受けない (`Method not found`) ので、データは `actions_dashboard` の結果の `_meta` で渡す。
@@ -82,6 +84,7 @@ Chrome 拡張 (`extension/`) + perUser MSI (`installer/`) + Linux 側リレー (
   (`$.process.run` / `$.http.fetch` / `$.tool.call`) 経由。判定は `pr-watch.ts` に純粋関数で置き、
   import は `.ts` 拡張子付き (Node 24 の `npm test` が直接読むため)。型 (`/plugin-types`) は build ごとに
   生成し commit しない。API は early access で release ごとに変わりうる → 壊れたら型を再生成して `tsc`
+  `hooks.json` の `modules` は 1 plugin に 1 つだけ (2 つ目は validate が拒否) → 入口は `hooks/index.ts` で、`register.ts` と `pane.tsx` を束ねる。
   `$` は変数に代入できない (`plugin validate` が拒否。module が読まれない)。`$.clock.every(…)` 等は閉包 (`Host`) にして渡す。
   persistent な Monitor を残すと `archive_session` が「live work」で畳めない → 止めどきは
   Actions 通知ごとの local branch 突合 / self-archive の直前 / 他セッションの archive 拒否時の停止要求 (`[pr-bridge-watch:stop]`)
