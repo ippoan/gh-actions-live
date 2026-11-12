@@ -37,9 +37,54 @@ export function watchUrlOf(bridge: string, repo: string, ref: string): string {
  * since は PR を作った時刻の 1 分前 (作成直後に走り出す CI を取りこぼさないため)。秒より下は落とす
  */
 export function dashboardHintOf(repo: string, nowMs: number): string {
-  const since = new Date(nowMs - 60_000).toISOString().replace(/\.\d+Z$/, 'Z')
+  const since = sinceOf(nowMs)
   return `pr-bridge-watch: この PR の CI はウィジェットで見せる。connector「gh-action-live」の actions_dashboard を ` +
     `{ repo: "${repo}", since: "${since}" } で 1 回呼ぶ (全 repo は出さない)`
+}
+
+/** PR を作った時刻の 1 分前 (作成直後に走り出す CI を取りこぼさない)。秒より下は落とす */
+export function sinceOf(nowMs: number): string {
+  return new Date(nowMs - 60_000).toISOString().replace(/\.\d+Z$/, 'Z')
+}
+
+/** bridge の `POST /mcp` (右側パネルが resources/read を投げる口)。`ws://127.0.0.1:8799` → `http://127.0.0.1:8799/mcp` */
+export function mcpUrlOf(bridge: string): string {
+  return statusUrlOf(bridge) + 'mcp'
+}
+
+/** bridge の resources/read に渡す、1 repo ぶんの一覧の URI (#74) */
+export function dataUriOf(repo: string, since: string): string {
+  return `gh-actions-live://dashboard?repo=${encodeURIComponent(repo)}&since=${encodeURIComponent(since)}`
+}
+
+/** HH:MM:SS (JST)。module の環境では Intl のタイムゾーンが当てにならないので +9 時間して UTC で読む */
+export function jst(ms: number): string {
+  return new Date(ms + 9 * 3600_000).toISOString().slice(11, 19)
+}
+
+// ago / elapsed は bridge/widget/dashboard.html の同名関数と同じ文言・同じ区切り (片方だけ変えない)。
+// 違いは「今」を引数で受けることと、読めない時刻を '' にすることだけ
+
+/** `12秒前` / `3分前` / `2時間前` / `1日前` */
+export function ago(at: string, nowMs: number): string {
+  const t = Date.parse(at)
+  if (!at || Number.isNaN(t)) return ''
+  const d = (nowMs - t) / 1000
+  if (d < 60) return `${Math.max(0, Math.trunc(d))}秒前`
+  if (d < 3600) return `${Math.trunc(d / 60)}分前`
+  if (d < 86400) return `${Math.trunc(d / 3600)}時間前`
+  return `${Math.trunc(d / 86400)}日前`
+}
+
+/** 実行中の run の開始からの経過。`5s` / `1m 5s` / `1h 2m` */
+export function elapsed(at: string, nowMs: number): string {
+  const t = Date.parse(at)
+  if (!at || Number.isNaN(t)) return ''
+  const d = Math.max(0, Math.trunc((nowMs - t) / 1000))
+  const h = Math.trunc(d / 3600)
+  const m = Math.trunc((d % 3600) / 60)
+  const s = d % 60
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`
 }
 
 /** bridge の状態 (`GET /`) を叩く http URL */

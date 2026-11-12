@@ -3,8 +3,9 @@
 // .ts は Node 24 の type stripping で直接 import する (import type は消える)。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
-  archiveTargetOf, dashboardHintOf, headOfCommand, isAutoModeNoVerdict, isDesktopEntrypoint, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest, isTaskGone,
+  ago, archiveTargetOf, dashboardHintOf, dataUriOf, elapsed, jst, mcpUrlOf, sinceOf, headOfCommand, isAutoModeNoVerdict, isDesktopEntrypoint, isLiveWorkRefusal, isPrCreateCommand, isSelfArchive, isStopRequest, isTaskGone,
   pullRefsOf, statusUrlOf, STOP_REQUEST, watchUrlOf,
 } from '../mods/pr-bridge-watch/hooks/pr-watch.ts';
 import { register, STOP_REQUEST_WAIT_MS } from '../mods/pr-bridge-watch/hooks/register.ts';
@@ -134,6 +135,67 @@ test('PR 作成に成功したら branch の /watch に Monitor を張り、cont
 test('ウィジェットの一文は PR の 1 分前からの since を秒で切って出す', () => {
   const now = Date.parse('2026-11-12T13:12:05.678Z');
   assert.match(dashboardHintOf('o/r', now), /\{ repo: "o\/r", since: "2026-11-12T13:11:05Z" \}/);
+});
+
+test('右側パネル: since は 1 分前を秒で切り、dashboardHintOf と同じ値', () => {
+  const now = Date.parse('2026-11-12T13:12:05.678Z');
+  assert.equal(sinceOf(now), '2026-11-12T13:11:05Z');
+  assert.ok(dashboardHintOf('o/r', now).includes(`since: "${sinceOf(now)}"`));
+});
+
+test('右側パネル: bridge の ws URL から /mcp の http URL', () => {
+  assert.equal(mcpUrlOf('ws://127.0.0.1:8799'), 'http://127.0.0.1:8799/mcp');
+  assert.equal(mcpUrlOf('ws://127.0.0.1:8799/'), 'http://127.0.0.1:8799/mcp');
+  assert.equal(mcpUrlOf('wss://h.example/'), 'https://h.example/mcp');
+});
+
+test('右側パネル: resources/read の URI は repo と since を encode する', () => {
+  assert.equal(
+    dataUriOf('ippoan/gh-actions-live', '2026-11-12T13:11:05Z'),
+    'gh-actions-live://dashboard?repo=ippoan%2Fgh-actions-live&since=2026-11-12T13%3A11%3A05Z',
+  );
+});
+
+test('右側パネル: jst は UTC+9 の HH:MM:SS', () => {
+  assert.equal(jst(Date.UTC(2026, 10, 12, 14, 2, 22)), '23:02:22');
+  assert.equal(jst(Date.UTC(2026, 10, 12, 15, 0, 0)), '00:00:00');
+});
+
+// widget (bridge/widget/dashboard.html) の ago / elapsed を取り出し、Date.now を固定して同じ入力で突き合わせる
+function widgetClock(nowMs) {
+  const html = readFileSync(new URL('../bridge/widget/dashboard.html', import.meta.url), 'utf8');
+  const src = ['ago', 'elapsed'].map(name => {
+    const m = html.match(new RegExp(`function ${name}\\(t\\) \\{[\\s\\S]*?\\n\\}`));
+    assert.ok(m, `dashboard.html に function ${name}(t) が無い`);
+    return m[0];
+  }).join('\n');
+  const FixedDate = class extends Date { static now() { return nowMs; } };
+  return new Function('Date', `${src}\nreturn { ago, elapsed };`)(FixedDate);
+}
+
+test('右側パネル: ago / elapsed は widget の dashboard.html と同じ文字列', () => {
+  const now = Date.parse('2026-11-12T14:00:00Z');
+  const w = widgetClock(now);
+  const secs = [0, 5, 59, 60, 65, 599, 3599, 3600, 3725, 7322, 86399, 86400, 200000];
+  for (const s of secs) {
+    const at = new Date(now - s * 1000 - 400).toISOString();
+    assert.equal(ago(at, now), w.ago(at), `ago ${s}s`);
+    assert.equal(elapsed(at, now), w.elapsed(at), `elapsed ${s}s`);
+  }
+  // 具体値 (widget と揃っていることの見本)
+  const at = s => new Date(now - s * 1000).toISOString();
+  assert.equal(ago(at(12), now), '12秒前');
+  assert.equal(ago(at(185), now), '3分前');
+  assert.equal(ago(at(7322), now), '2時間前');
+  assert.equal(ago(at(200000), now), '2日前');
+  assert.equal(elapsed(at(5), now), '5s');
+  assert.equal(elapsed(at(65), now), '1m 5s');
+  assert.equal(elapsed(at(3725), now), '1h 2m');
+  // 未来の時刻は 0 に寄せる / 読めない時刻は ''
+  assert.equal(ago(at(-30), now), w.ago(at(-30)));
+  assert.equal(elapsed(at(-30), now), '0s');
+  assert.equal(ago('', now), '');
+  assert.equal(elapsed('nope', now), '');
 });
 
 test('同じ branch は二度張らない', async () => {

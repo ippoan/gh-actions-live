@@ -200,7 +200,7 @@ installer/update.ps1 更新スクリプト (native host / 手動 / 任意でタ�
 installer/host.ps1   native messaging host (「更新」ボタンの実体)
 bridge/             Claude Code (Linux) 側の常駐リレー (Rust / systemd --user。下記)
 linux-browser/      拡張を Linux の headless Chromium で常駐させる一式 (Windows の Chrome の代わり。下記)
-mods/pr-bridge-watch Claude Mod: PR を作ったら branch の CI を bridge の /watch に繋ぐ (下記)
+mods/pr-bridge-watch Claude Mod: PR を作ったら branch の CI を bridge の /watch に繋ぎ、右側パネルに出す (下記)
 .claude-plugin/     上の mod を配る plugin marketplace
 ```
 
@@ -401,6 +401,11 @@ background task を持つセッションを畳まない (`still has live work`)�
   (turn を起こさない)、全部止める。子が自分で PR を作ったときの経路。pinned 等の拒否ではやり直さない
 
 task ID (Monitor の結果) が取れないとき・PR の branch が local に無いときは自動では止まらないので、context にそう書く。
+
+**右側パネル** (`hooks/pane.tsx`): PR を作ると、その repo の run を Code タブの右側パネル (`$.ui.open` の Pane) に
+5 秒ごとに出す (PR を作った時刻の 1 分前以降の run だけ)。`/actions-pane owner/repo` で repo を足して開く (引数なしは開くだけ)。
+データは bridge の `POST /mcp` に `resources/read` (`gh-actions-live://dashboard?repo=…&since=…`) を投げて読む
+(GitHub の API は叩かない)。見た目と `ago` / `elapsed` は `bridge/widget/dashboard.html` と揃える。
 installed plugin は起動中のセッションでは読み直されない (更新は新しいセッションから効く)。
 
 導入 (Claude Code 2.1.260 以上。function hooks は既定 off):
