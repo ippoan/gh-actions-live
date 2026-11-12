@@ -9,7 +9,9 @@
 //!   `structuredContent` があると text の代わりにそれをモデルへ渡し、42 repo 分 (9 万字) が毎回
 //!   上限超えでファイルに退避された (#62 の実機確認)。repo ごとの run はビュー専用のツール
 //!   (`actions_dashboard_data`、`_meta.ui.visibility = ["app"]`) の `structuredContent` で渡す
-//! - ビューは sandbox の iframe で動き、5 秒ごとにホスト経由の `tools/call` でビュー専用のツールを呼ぶ。
+//! - ビューは sandbox の iframe で動き、5 秒ごとにホスト経由で更新する。ホストが serverTools を出せば
+//!   `tools/call` でビュー専用のツールを、serverResources だけなら `resources/read` でデータ用リソース
+//!   (`DATA_URI` / `DATA_URI_UI`) を読む (Claude desktop の Code タブは後者だけ)。
 //!   iframe は Claude のデスクトップアプリ (Windows) 側に出るので、Linux の bridge へ直接 ws は張らない
 //! - 書き込みの口は無い (読み取り専用)。8799 に届く者には今でも `GET /` で同じ程度の情報が見えている
 
@@ -32,6 +34,10 @@ pub fn view_uri() -> String {
 }
 /// MCP Apps の HTML リソースの mimeType (ext-apps の RESOURCE_MIME_TYPE と同値)
 pub const MIME: &str = "text/html;profile=mcp-app";
+/// ウィジェットが `resources/read` で読むデータ (後ろに `?repo=…&since=…` を付けてよい)。
+/// ホストの代理が scheme で絞るかは未確認なので、`ui://` の形も同じ処理で受ける
+pub const DATA_URI: &str = "gh-actions-live://dashboard";
+pub const DATA_URI_UI: &str = "ui://gh-actions-live/data";
 const VIEW_HTML: &str = include_str!("../widget/dashboard.html");
 /// repo ごとに返す run の上限 (拡張のダッシュボードの MAX_CARDS_PER_REPO と同じ)
 pub const MAX_RUNS_PER_REPO: usize = 7;
@@ -183,7 +189,7 @@ fn tool_defs() -> Value {
             "title": "GitHub Actions ダッシュボード",
             "description": "watch 中の全 repo の GitHub Actions の run (実行中・失敗・経過時間) を、拡張のダッシュボードと同じ見た目のウィジェットで出す。\
 結果のテキストは実行中の run と workflow ごとの最新が赤の run だけの要約。\
-データはログイン済みのブラウザ (gh-actions-live 拡張) が bridge に流したもので、GitHub の API は叩かない。ウィジェットは 5 秒ごとに更新される。",
+データはログイン済みのブラウザ (gh-actions-live 拡張) が bridge に流したもので、GitHub の API は叩かない。ウィジェットはホストが許す経路 (ツール呼び出しかリソースの読み出し) で 5 秒ごとに更新する。",
             "inputSchema": repo_arg(),
             "annotations": { "readOnlyHint": true, "openWorldHint": false },
             "_meta": { "ui": { "resourceUri": view_uri() }, "ui/resourceUri": view_uri() }
@@ -245,9 +251,23 @@ pub fn handle(req: &Value, data: impl FnOnce(&Query) -> Value) -> Option<Value> 
             "uri": view_uri(), "name": "GitHub Actions dashboard view", "mimeType": MIME,
             "description": "actions_dashboard の結果を repo ごとの列で出すビュー"
         }] })),
-        "resources/templates/list" => ok(&id, json!({ "resourceTemplates": [] })),
+        "resources/templates/list" => ok(&id, json!({ "resourceTemplates": [{
+            "uriTemplate": format!("{DATA_URI}{{?repo,since}}"), "name": "GitHub Actions dashboard data", "mimeType": "application/json"
+        }] })),
         "resources/read" => {
-            if params["uri"].as_str() != Some(view_uri().as_str()) {
+            let uri = params["uri"].as_str().unwrap_or("");
+            let (base, query) = uri.split_once('?').unwrap_or((uri, ""));
+            // データ: `?` の手前が完全一致のときだけ (前方一致にしない)
+            if base == DATA_URI || base == DATA_URI_UI {
+                let args: serde_json::Map<String, Value> = form_urlencoded::parse(query.as_bytes())
+                    .filter(|(k, _)| k == "repo" || k == "since")
+                    .map(|(k, v)| (k.into_owned(), Value::String(v.into_owned())))
+                    .collect();
+                let args = Value::Object(args);
+                let d = data(&Query::from_args(&args));
+                return Some(ok(&id, json!({ "contents": [{ "uri": uri, "mimeType": "application/json", "text": d.to_string() }] })));
+            }
+            if uri != view_uri() {
                 return Some(err(&id, -32002, format!("知らないリソース: {}", params["uri"])));
             }
             ok(&id, json!({ "contents": [{
@@ -363,5 +383,39 @@ mod tests {
         assert!(text.contains(&view_version()) && !text.contains("__WIDGET_VERSION__"), "見出しに版を出す");
         assert_eq!(call("bogus", json!({}))["error"]["code"], -32601);
         assert!(handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }), |_: &Query| Value::Null).is_none());
+    }
+
+    #[test]
+    fn resources_read_serves_dashboard_data() {
+        let rs = runs();
+        let read = |uri: &str| handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": { "uri": uri } }), |q: &Query| dashboard(&[], &rs, true, q)).unwrap();
+        let repos = |res: &Value| -> Vec<String> {
+            let d: Value = serde_json::from_str(res["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+            d["repos"].as_array().unwrap().iter().map(|r| field(r, "repo")).collect()
+        };
+        let all = read(DATA_URI);
+        assert_eq!(all["result"]["contents"][0]["mimeType"], "application/json");
+        assert_eq!(all["result"]["contents"][0]["uri"], DATA_URI);
+        assert_eq!(repos(&all).len(), 2);
+        let b = read("ui://gh-actions-live/data?repo=b");
+        assert_eq!(b["result"]["contents"][0]["uri"], "ui://gh-actions-live/data?repo=b", "要求どおりの uri を返す");
+        assert_eq!(repos(&b), ["o/b"]);
+        // %3A が decode されて since で絞れる (o/a の 01:00 と o/b の 00:30 が落ちる)
+        let since = read("gh-actions-live://dashboard?since=2026-11-12T02%3A00%3A00Z");
+        let d: Value = serde_json::from_str(since["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+        let runs_left: Vec<String> = d["repos"].as_array().unwrap().iter().flat_map(|r| r["runs"].as_array().unwrap().iter().map(|x| field(x, "run"))).collect();
+        assert_eq!(runs_left.len(), 2, "{runs_left:?}");
+        assert!(!runs_left.contains(&"1".to_string()) && !runs_left.contains(&"7".to_string()));
+        assert_eq!(read("gh-actions-live://dashboardX")["error"]["code"], -32002, "前方一致にしない");
+        assert_eq!(read("gh-actions-live://dashboardX?repo=b")["error"]["code"], -32002);
+    }
+
+    #[test]
+    fn resource_templates_list_has_data_template() {
+        let res = handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "resources/templates/list" }), |_: &Query| Value::Null).unwrap();
+        let t = res["result"]["resourceTemplates"].as_array().unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0]["uriTemplate"], "gh-actions-live://dashboard{?repo,since}");
+        assert_eq!(t[0]["mimeType"], "application/json");
     }
 }
