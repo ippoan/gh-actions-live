@@ -403,7 +403,7 @@ background task を持つセッションを畳まない (`still has live work`)�
 task ID (Monitor の結果) が取れないとき・PR の branch が local に無いときは自動では止まらないので、context にそう書く。
 
 **右側パネル** (`hooks/pane.tsx`): PR を作ると、その repo の run を Code タブの右側パネル (`$.ui.open` の Pane) に
-5 秒ごとに出す (PR を作った時刻の 1 分前以降の run だけ)。`/actions-pane owner/repo` で repo を足して開く (引数なしは開くだけ)。
+5 秒ごとに出す (PR を作った時刻の 1 分前以降の run だけ)。`/actions-pane owner/repo` で repo を足して開く (引数なしはセッションの cwd の `git remote get-url origin` から repo を引いて足す)。
 データは bridge の `POST /mcp` に `resources/read` (`gh-actions-live://dashboard?repo=…&since=…`) を投げて読む
 (GitHub の API は叩かない)。見た目と `ago` / `elapsed` は `bridge/widget/dashboard.html` と揃える。
 installed plugin は起動中のセッションでは読み直されない (更新は新しいセッションから効く)。
