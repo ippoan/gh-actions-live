@@ -3,13 +3,13 @@ import type { Register } from 'claude-code'
 
 import type { Pending, RepoRuns, View, Watched, Wave } from '../state'
 import { ago, dataUriOf, elapsed, isPrCreateCommand, jst, mcpUrlOf, pullRefsOf, repoOfRemoteUrl, sinceOf } from './pr-watch.ts'
-import { flipKeyOf, flipPending, isFlippable, labelOf, loadPending, shortId } from './release-wave.ts'
+import { flipKeyOf, flipPending, followUp, isFlippable, isPaneOpen, labelOf, loadPending, shortId } from './release-wave.ts'
 
 const DEFAULT_BRIDGE = 'ws://127.0.0.1:8799'
 const PANE = 'actions-pane'
 const TITLE = 'GitHub Actions'
 const POLL_MS = 5000
-/** Release Wave の切り替え待ちは connector 越し (ci-dashboard) なので run より間を空ける: POLL_MS × 6 = 30 秒 */
+/** Release Wave の切り替え待ちは connector 越し (ci-dashboard) なので run より間を空ける: POLL_MS × 6 = 30 秒 (パネルが開いている間だけ) */
 const WAVE_EVERY = 6
 
 const watched = atom({ plugin: 'pr-bridge-watch', key: 'watched' } as const, [] as Watched[], { shape: 'watched-1' })
@@ -18,7 +18,7 @@ const view = atom({ plugin: 'pr-bridge-watch', key: 'view' } as const, { repos: 
 })
 const wave = atom(
   { plugin: 'pr-bridge-watch', key: 'wave' } as const,
-  { rows: [], fetchedAt: 0, error: '', armed: '', busy: '', msg: '' } as Wave,
+  { rows: [], fetchedAt: 0, error: '', armed: '', busy: '', msg: '', sent: [], stopped: false } as Wave,
   { shape: 'wave-1' },
 )
 
@@ -29,7 +29,9 @@ const wave = atom(
  * パネルは PR を作ったときと `/actions-pane` のときだけ開く
  *
  * 下に Release Wave の「切り替え待ち」を並べ、行ごとに Flip できる (#83)。データは ci-dashboard の connector の
- * release_wave_pending_state を `$.tool.call` で読む (release-wave.ts)。Flip は「Flip → 確定」の 2 段で確認を 1 回挟む
+ * release_wave_pending_state を `$.tool.call` で読む (release-wave.ts)。読みはパネルが開いている間だけ 30 秒ごと、
+ * connector が無ければそう出して止まる (/actions-pane で再開)。Flip は「Flip → 確定」の 2 段で確認を 1 回挟み、
+ * 成否は断言せず次の読みで行が消えたかで出す
  */
 export const register: Register = (on, options) => {
   const bridge = typeof options.bridgeUrl === 'string' && options.bridgeUrl !== '' ? options.bridgeUrl : DEFAULT_BRIDGE
@@ -37,19 +39,30 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'actions-pane', description: 'GitHub Actions のパネルを開く (引数に owner/repo で追加)' })
-    let tick = 0
+    // 前の読みから何 tick 経ったか。最初と、パネルを開き直した直後の tick で読めるよう WAVE_EVERY から始める
+    let sinceWave = WAVE_EVERY
     $.clock.every(POLL_MS, async () => {
-      const list = await read($, watched)
-      if (list.length === 0) return
-      if (tick++ % WAVE_EVERY === 0) {
-        const { rows, error } = await loadPending({
+      sinceWave++
+      const open = await $.ui.panes().then(
+        panes => isPaneOpen(panes, PANE),
+        () => false,
+      )
+      if (!open) sinceWave = WAVE_EVERY
+      else if (sinceWave >= WAVE_EVERY && !(await read($, wave)).stopped) {
+        sinceWave = 0
+        const { rows, error, noConnector } = await loadPending({
           list: () => $.tool.list(),
           call: (tool, input) => $.tool.call({ tool, ...input } as Parameters<typeof $.tool.call>[0]),
           submit: text => $.prompt.submit({ text }),
         })
         const at = await $.clock.now()
-        await update($, wave, w => ({ ...w, rows, error, fetchedAt: at }))
+        await update($, wave, w => {
+          const f = followUp(w.sent, rows)
+          return { ...w, rows, error, fetchedAt: at, stopped: noConnector === true, sent: f.sent, msg: f.msg ?? w.msg }
+        })
       }
+      const list = await read($, watched)
+      if (list.length === 0) return
       const repos: RepoRuns[] = []
       let error = ''
       for (const w of list) {
@@ -89,6 +102,8 @@ export const register: Register = (on, options) => {
       const add = repo
       await update($, watched, list => [...list.filter(w => w.repo !== add), { repo: add, since }])
     }
+    // connector が無くて止めた読みを再開する (connector を繋ぎ直した後に打つ)
+    await update($, wave, w => ({ ...w, stopped: false }))
     await $.ui.open({ id: PANE, title: TITLE })
     if (repo) return { text: `${repo} をパネルに足した` }
     return { text: 'パネルを開いた (/actions-pane owner/repo で足せる)' }
@@ -118,7 +133,7 @@ export const register: Register = (on, options) => {
     const flip = async (p: Pending) => {
       const key = flipKeyOf(p)
       await update($, wave, x => ({ ...x, armed: '', busy: key, msg: `Flip ${labelOf(p)} ${p.tag ?? ''} を送信中…` }))
-      const msg = await flipPending(
+      const { msg, sent } = await flipPending(
         {
           list: () => $.tool.list(),
           call: (tool, input) => $.tool.call({ tool, ...input } as Parameters<typeof $.tool.call>[0]),
@@ -126,7 +141,13 @@ export const register: Register = (on, options) => {
         },
         p,
       )
-      await update($, wave, x => ({ ...x, busy: '', msg }))
+      const label = `${labelOf(p)} ${p.tag ?? ''}`
+      await update($, wave, x => ({
+        ...x,
+        busy: '',
+        msg,
+        sent: sent ? [...x.sent.filter(s => s.key !== key), { key, label, reads: 0 }] : x.sent,
+      }))
     }
     const waveRows = (
       <Box flexDirection="column" marginTop={1}>
@@ -134,6 +155,7 @@ export const register: Register = (on, options) => {
           Release Wave 切り替え待ち <Text dimColor>{w.fetchedAt ? `${w.rows.length} 件 · 更新 ${jst(w.fetchedAt)}` : '読み込み中…'}</Text>
         </Text>
         {w.error !== '' && <Text color="red">{w.error}</Text>}
+        {w.stopped && <Text dimColor>{'   '}読みを止めた (connector を繋いだら /actions-pane で再開)</Text>}
         {w.msg !== '' && <Text dimColor wrap="truncate-end">{w.msg}</Text>}
         {w.fetchedAt !== 0 && w.error === '' && w.rows.length === 0 && <Text dimColor>切り替え待ちは無い</Text>}
         {w.rows.map(p => {

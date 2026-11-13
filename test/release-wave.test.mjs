@@ -3,7 +3,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  flipArgsOf, flipKeyOf, flipPending, flipPromptOf, flipToolOf, isFlippable, labelOf, loadPending, pendingRowsOf, shortId, stateToolOf,
+  FLIP_REQUESTED, FOLLOW_READS, NO_CONNECTOR, flipArgsOf, flipKeyOf, flipPending, flipPromptOf, flipToolOf, followUp, isFlippable, isPaneOpen, labelOf,
+  loadPending, pendingRowsOf, shortId, stateToolOf,
 } from '../mods/pr-bridge-watch/hooks/release-wave.ts';
 
 const STATE = 'mcp__72d6cc20-9f30-46e2-ac4f-cf3736a87a7f__release_wave_pending_state';
@@ -82,8 +83,16 @@ test('読み: connector の pending_state を引数なしで呼び、行を返�
   assert.deepEqual(h.calls.call, [{ tool: STATE, input: {} }]);
 });
 
-test('読み: connector が無い・拒否・失敗・一覧が読めないは行なしで理由だけ', async () => {
-  assert.match((await loadPending(host({ tools: [{ name: 'Bash', mcp: false }] }))).error, /connector .*繋がっていない/);
+test('読み: connector が無ければ「繋がっていません」と止める印 (throw しない)', async () => {
+  const h = host({ tools: [{ name: 'Bash', mcp: false }] });
+  assert.deepEqual(await loadPending(h), { rows: [], error: NO_CONNECTOR, noConnector: true });
+  assert.equal(NO_CONNECTOR, 'ci-dashboard の connector が繋がっていません');
+  assert.deepEqual(h.calls.call, []);
+  // connector があれば止める印は付かない
+  assert.equal((await loadPending(host())).noConnector, undefined);
+});
+
+test('読み: 拒否・失敗・一覧が読めないは行なしで理由だけ (止めない)', async () => {
   assert.match((await loadPending(host({ call: () => ({ deny: 'ask rule' }) }))).error, /呼べない: ask rule/);
   assert.match((await loadPending(host({ call: () => ({ isError: true, text: 'boom' }) }))).error, /失敗: boom/);
   assert.match((await loadPending(host({ call: () => { throw new Error('aborted'); } }))).error, /aborted/);
@@ -94,30 +103,60 @@ test('読み: connector が無い・拒否・失敗・一覧が読めないは�
 test('Flip: 確定の後は flip のツールを repo (と worker_name) で 1 回呼ぶ', async () => {
   const h = host({ call: () => ({ text: '{"ok":true}' }) });
   const [alc] = pendingRowsOf(STATE_TEXT);
-  const msg = await flipPending(h, alc);
+  const r = await flipPending(h, alc);
   assert.deepEqual(h.calls.call, [{ tool: FLIP, input: { repo: 'yhonda-ohishi-alc/alc-app' } }]);
   assert.deepEqual(h.calls.submit, []);
-  assert.match(msg, /^Flip yhonda-ohishi-alc\/alc-app v0\.0\.522: 送信した/);
+  // 成否は断言しない: 依頼したことだけ言い、結果は次の読み (followUp) で出す
+  assert.deepEqual(r, { msg: `Flip yhonda-ohishi-alc/alc-app v0.0.522: ${FLIP_REQUESTED}`, sent: true });
+  assert.equal(FLIP_REQUESTED, '切り替えを依頼しました (GitHub Actions で実行)');
 });
 
 test('Flip: 設定で ask にしてあり mod から呼べなければ、モデルに同じ引数で頼む (許可カードで止まる)', async () => {
   const h = host({ call: () => ({ deny: 'needs approval' }) });
   const [alc] = pendingRowsOf(STATE_TEXT);
-  const msg = await flipPending(h, alc);
+  const r = await flipPending(h, alc);
   assert.equal(h.calls.call.length, 1);
   assert.deepEqual(h.calls.submit, [flipPromptOf(FLIP, alc)]);
   assert.match(h.calls.submit[0], new RegExp(`${FLIP} を \\{"repo":"yhonda-ohishi-alc/alc-app"\\} で 1 回だけ呼び`));
-  assert.match(msg, /許可カードで確定/);
+  assert.match(r.msg, /会話に回しました \(許可カードで確定\)/);
+  assert.equal(r.sent, true);
 });
 
 test('Flip: 失敗・connector 無しは結果の 1 行で返し、モデルには頼まない', async () => {
   const [alc] = pendingRowsOf(STATE_TEXT);
   const failed = host({ call: () => ({ isError: true, text: '{"ok":false,"error":"no pending"}' }) });
-  assert.match(await flipPending(failed, alc), /失敗 .*no pending/);
+  const f = await flipPending(failed, alc);
+  assert.match(f.msg, /失敗 .*no pending/);
+  assert.equal(f.sent, false);
   assert.deepEqual(failed.calls.submit, []);
   const none = host({ tools: [] });
-  assert.match(await flipPending(none, alc), /connector が繋がっていない/);
+  assert.deepEqual(await flipPending(none, alc), { msg: `Flip yhonda-ohishi-alc/alc-app v0.0.522: ${NO_CONNECTOR}`, sent: false });
   assert.deepEqual(none.calls.call, []);
   const thrown = host({ call: () => { throw new Error('aborted'); } });
-  assert.match(await flipPending(thrown, alc), /失敗 Error: aborted/);
+  assert.match((await flipPending(thrown, alc)).msg, /失敗 Error: aborted/);
+});
+
+test('Flip の後: 次の読みで行が消えていれば「消えました」、残っていれば「まだ残っています」', () => {
+  const [alc, mono] = pendingRowsOf(STATE_TEXT);
+  const sent = [{ key: flipKeyOf(alc), label: 'yhonda-ohishi-alc/alc-app v0.0.522', reads: 0 }];
+  // 残っている → 追い続ける (reads を 1 増やす)
+  const still = followUp(sent, [alc, mono]);
+  assert.deepEqual(still.sent, [{ ...sent[0], reads: 1 }]);
+  assert.match(still.msg, /^yhonda-ohishi-alc\/alc-app v0\.0\.522: まだ切り替え待ちに残っています/);
+  // 消えた → 追うのをやめる
+  const gone = followUp(still.sent, [mono]);
+  assert.deepEqual(gone, { sent: [], msg: 'yhonda-ohishi-alc/alc-app v0.0.522: 切り替え待ちから消えました' });
+  // 何も追っていなければ msg は null (直前の表示を残す)
+  assert.deepEqual(followUp([], [alc]), { sent: [], msg: null });
+  // FOLLOW_READS 回読んでも残っていたら追うのをやめる (表示は最後の 1 回だけ)
+  const last = followUp([{ ...sent[0], reads: FOLLOW_READS - 1 }], [alc]);
+  assert.deepEqual(last.sent, []);
+  assert.match(last.msg, /まだ切り替え待ちに残っています/);
+});
+
+test('パネルが開いているか: id があり、surface が置いている (待ちの pane は開いていない扱い)', () => {
+  assert.equal(isPaneOpen([{ id: 'actions-pane', isPlaced: true }], 'actions-pane'), true);
+  assert.equal(isPaneOpen([{ id: 'actions-pane', isPlaced: false }], 'actions-pane'), false);
+  assert.equal(isPaneOpen([{ id: 'other', isPlaced: true }], 'actions-pane'), false);
+  assert.equal(isPaneOpen([], 'actions-pane'), false);
 });
