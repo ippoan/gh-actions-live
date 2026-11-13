@@ -24,8 +24,22 @@ export type Pending = {
   rollback_tag: string | null
   rollback_to: string | null
 }
-/** armed = 確定待ちの行の key、busy = 送信中の行の key、msg = 直近の Flip の結果 */
-export type Wave = { rows: Pending[]; fetchedAt: number; error: string; armed: string; busy: string; msg: string }
+/** Flip を投げて、次の読みで行が消えたかを見ている行 (reads = 投げてから読んだ回数) */
+export type Sent = { key: string; label: string; reads: number }
+/**
+ * armed = 確定待ちの行の key、busy = 送信中の行の key、msg = 直近の Flip とその後の結果、
+ * sent = 結果を追っている行、stopped = connector が無く読みを止めた (/actions-pane で再開)
+ */
+export type Wave = {
+  rows: Pending[]
+  fetchedAt: number
+  error: string
+  armed: string
+  busy: string
+  msg: string
+  sent: Sent[]
+  stopped: boolean
+}
 
 declare module 'claude-code' {
   interface PluginState {

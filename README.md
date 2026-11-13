@@ -315,13 +315,14 @@ task ID (Monitor の結果) が取れないとき・PR の branch が local に�
 データは bridge の `POST /mcp` に `resources/read` (`gh-actions-live://dashboard?repo=…&since=…`) を投げて読む
 (GitHub の API は叩かない)。見た目と `ago` / `elapsed` は `bridge/widget/dashboard.html` と揃える。
 
-run の下に **Release Wave の切り替え待ち (pending flip)** を 30 秒ごとに並べ、行ごとに Flip できる (#83、`hooks/release-wave.ts`)。
+run の下に **Release Wave の切り替え待ち (pending flip)** を、パネルが開いている間だけ 30 秒ごとに並べ、行ごとに Flip できる (#83、`hooks/release-wave.ts`)。
 データと Flip の口は ci-dashboard の /release-wave と同じ (`release_wave_pending_state` の `unified` / `release_wave_pending_flip`)。
 ci-dashboard の `/mcp` は OAuth の bearer、HTTP は CF Access の内側なので、mod は token を持たず、**セッションに繋がっている
 ci-dashboard の connector のツールを `$.tool.call` で呼ぶ** (`$.tool.list()` から `…__release_wave_pending_state` を名前の末尾で探す。
-connector が無ければパネルにそう出る)。Flip は「Flip → 確定」の 2 段で確認を 1 回挟む (tag の無い version は押させない)。
+connector が無ければ「ci-dashboard の connector が繋がっていません」と出して読みを止める。繋いだら `/actions-pane` で再開)。Flip は「Flip → 確定」の 2 段で確認を 1 回挟む (tag の無い version は押させない)。
 settings の `permissions.ask` に `…__release_wave_pending_flip` があると mod からは呼べない (`$.tool.call` は ask を deny で返す) ので、
-その引数でモデルに呼ばせる一文を `$.prompt.submit` で送り、セッションの許可カードで止まる。結果は GitHub Actions の Release Wave の run で見る。
+その引数でモデルに呼ばせる一文を `$.prompt.submit` で送り、セッションの許可カードで止まる (ユーザーが付けた ask を素通りさせない)。
+投げた後は「切り替えを依頼しました (GitHub Actions で実行)」とだけ出し、成否は断言しない: 次の読みで行が消えたか (`followUp`) を出す。
 installed plugin は起動中のセッションでは読み直されない (更新は新しいセッションから効く)。
 
 導入 (Claude Code 2.1.260 以上。function hooks は既定 off):

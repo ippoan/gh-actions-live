@@ -6,7 +6,7 @@
 // connector のツール (`mcp__<uuid>__release_wave_pending_state` / `…__release_wave_pending_flip`) を
 // `$.tool.call` で呼ぶ。uuid は環境ごとに違うので `$.tool.list()` から名前の末尾で探す。
 
-import type { Pending } from '../state'
+import type { Pending, Sent } from '../state'
 
 export const STATE_SUFFIX = '__release_wave_pending_state'
 export const FLIP_SUFFIX = '__release_wave_pending_flip'
@@ -97,15 +97,28 @@ export function flipPromptOf(flipTool: string, p: Pending): string {
   )
 }
 
-/** 全行を読む。connector が無ければ空 + 理由 */
-export async function loadPending(host: Host): Promise<{ rows: Pending[]; error: string }> {
+export const NO_CONNECTOR = 'ci-dashboard の connector が繋がっていません'
+export const FLIP_REQUESTED = '切り替えを依頼しました (GitHub Actions で実行)'
+/** Flip を投げた行を何回の読みまで追うか (30 秒 × 10 = 5 分)。それを過ぎたら黙って外す */
+export const FOLLOW_READS = 10
+
+/** 右側パネルが開いているか (`$.ui.panes()` に id があり、surface が置いている) */
+export function isPaneOpen(panes: readonly { id: string; isPlaced?: boolean }[], id: string): boolean {
+  return panes.some(p => p.id === id && p.isPlaced !== false)
+}
+
+/**
+ * 全行を読む。connector が無ければ空 + 理由 + `noConnector` (呼び手は読みを止める)。
+ * 読みは失敗しても throw しない (パネルが落ちない)
+ */
+export async function loadPending(host: Host): Promise<{ rows: Pending[]; error: string; noConnector?: true }> {
   let tool: string | null
   try {
     tool = stateToolOf(await host.list())
   } catch (err) {
     return { rows: [], error: `ツールの一覧が読めない: ${String(err)}` }
   }
-  if (tool === null) return { rows: [], error: 'ci-dashboard の connector (release_wave_pending_state) が繋がっていない' }
+  if (tool === null) return { rows: [], error: NO_CONNECTOR, noConnector: true }
   try {
     const r = await host.call(tool, {})
     if (r.deny !== undefined) return { rows: [], error: `release_wave_pending_state を呼べない: ${r.deny}` }
@@ -118,27 +131,48 @@ export async function loadPending(host: Host): Promise<{ rows: Pending[]; error:
 
 /**
  * 確定を押した後の Flip。パネルの「Flip → 確定」の 2 段が確認の 1 回。
- * 設定で ask にしてあり mod から呼べない (deny) ときは、モデルに同じ引数で呼ばせる (セッションの許可カードで止まる)
+ * 設定で ask にしてあり mod から呼べない (deny) ときは、モデルに同じ引数で呼ばせる (セッションの許可カードで止まる。
+ * ユーザーが自分で付けた ask を素通りさせない)。投げた結果で成否を断言しない: 成否は次の読みで行が消えたかで出す (followUp)
  */
-export async function flipPending(host: Host, p: Pending): Promise<string> {
+export async function flipPending(host: Host, p: Pending): Promise<{ msg: string; sent: boolean }> {
   const label = `Flip ${labelOf(p)} ${p.tag ?? ''}`
   let tool: string | null
   try {
     tool = stateToolOf(await host.list())
   } catch (err) {
-    return `${label}: ツールの一覧が読めない (${String(err)})`
+    return { msg: `${label}: ツールの一覧が読めない (${String(err)})`, sent: false }
   }
-  if (tool === null) return `${label}: ci-dashboard の connector が繋がっていない`
+  if (tool === null) return { msg: `${label}: ${NO_CONNECTOR}`, sent: false }
   const flipTool = flipToolOf(tool)
   try {
     const r = await host.call(flipTool, flipArgsOf(p))
     if (r.deny !== undefined) {
       await host.submit(flipPromptOf(flipTool, p))
-      return `${label}: 許可が要る設定なので会話に頼んだ (許可カードで確定する)`
+      return { msg: `${label}: 許可が要る設定なので会話に回しました (許可カードで確定)`, sent: true }
     }
-    if (r.isError) return `${label}: 失敗 ${(r.text ?? '').slice(0, 200)}`
-    return `${label}: 送信した (結果は GitHub Actions の Release Wave の run で確認)`
+    if (r.isError) return { msg: `${label}: 失敗 ${(r.text ?? '').slice(0, 200)}`, sent: false }
+    return { msg: `${label}: ${FLIP_REQUESTED}`, sent: true }
   } catch (err) {
-    return `${label}: 失敗 ${String(err)}`
+    return { msg: `${label}: 失敗 ${String(err)}`, sent: false }
   }
+}
+
+/**
+ * Flip を投げた行を、次の読みの結果と突き合わせる。行が消えていれば「消えた」、残っていれば「まだ残っている」。
+ * 消えた行と FOLLOW_READS 回読んだ行は追うのをやめる。何も追っていなければ msg は null (直前の表示を残す)
+ */
+export function followUp(sent: readonly Sent[], rows: readonly Pending[]): { sent: Sent[]; msg: string | null } {
+  if (sent.length === 0) return { sent: [], msg: null }
+  const keys = new Set(rows.map(flipKeyOf))
+  const lines: string[] = []
+  const next: Sent[] = []
+  for (const s of sent) {
+    if (!keys.has(s.key)) {
+      lines.push(`${s.label}: 切り替え待ちから消えました`)
+      continue
+    }
+    lines.push(`${s.label}: まだ切り替え待ちに残っています (GitHub Actions の Release Wave の run を確認)`)
+    if (s.reads + 1 < FOLLOW_READS) next.push({ ...s, reads: s.reads + 1 })
+  }
+  return { sent: next, msg: lines.join(' / ') }
 }
