@@ -60,6 +60,9 @@ Chrome 拡張 (`extension/`。Linux の headless Chromium = `linux-browser/` が
   見た目と並びは `extension/dashboard.js` の `card()` / `render()` / `MAX_CARDS_PER_REPO` と揃える (片方だけ変えない)。
   右側パネル (`mods/pr-bridge-watch/hooks/pane.tsx`) も `resources/read` で読む。見た目と `ago`/`elapsed` は widget/dashboard.html と揃える
   (`pr-watch.ts` の `ago`/`elapsed` を widget から取り出して突き合わせるテストがある)。
+  パネルの Release Wave 切り替え待ち (#83) は bridge を通さず、セッションの ci-dashboard connector のツールを `$.tool.call` で呼ぶ
+  (`release-wave.ts`。ci-dashboard は OAuth / CF Access の内側で、mod も bridge も token を持たない。bridge に中継を足さない)。
+  `$.tool.call` は分類器もダイアログも通らず、settings で ask のツールは deny で返る → Flip はパネルの 2 段確認の後、deny なら `$.prompt.submit` でモデルに呼ばせる
   **ウィジェットの HTML を変えたら connector を繋ぎ直す** (claude.ai は接続時に `ui://` を先読みして保存し、セッションをまたいで
   使い回す。bridge の入れ替えでも新しいセッションでも読み直さない)。URI と見出しの版は HTML のハッシュで変わる (`view_uri` / `view_version`)。
   Code タブはウィジェットからの `tools/call` を受けない (`Method not found`) ので、データは `actions_dashboard` の結果の `_meta` で渡す。

@@ -1,7 +1,7 @@
 {
   "name": "pr-bridge-watch",
-  "version": "0.1.6",
-  "description": "gh pr create / pr-push.sh で PR ができたら、その branch の CI を gh-actions-bridge の ws /watch に Monitor で繋ぎ、その repo の run を Code タブの右側パネルに 5 秒ごとに出す Claude Mod (function hooks)",
+  "version": "0.1.7",
+  "description": "gh pr create / pr-push.sh で PR ができたら、その branch の CI を gh-actions-bridge の ws /watch に Monitor で繋ぎ、その repo の run と Release Wave の切り替え待ち (Flip つき) を Code タブの右側パネルに出す Claude Mod (function hooks)",
   "types": "./state.d.ts",
   "author": { "name": "ippoan" },
   "userConfig": {
