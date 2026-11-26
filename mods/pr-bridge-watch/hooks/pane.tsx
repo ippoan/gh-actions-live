@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { Pending, RepoRuns, View, Watched, Wave } from '../state'
 import { ago, dataUriOf, elapsed, isPrCreateCommand, jst, mcpUrlOf, pullRefsOf, repoOfRemoteUrl, sinceOf } from './pr-watch.ts'
@@ -85,28 +85,20 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'actions-pane' }, async ($, e) => {
-    const arg = String((e as { args?: unknown }).args ?? '').trim()
-    // 引数なしなら、セッションの cwd の git remote (origin) から repo を引く
-    let repo: string | null = arg
-    if (arg === '') {
-      try {
-        const r = await $.process.run(['git', 'remote', 'get-url', 'origin'], { timeoutMs: 15000 })
-        repo = r.exitCode === 0 ? repoOfRemoteUrl(r.stdout) : null
-      } catch {
-        repo = null
-      }
+  on('command.run', { command: 'actions-pane' }, async ($, e) => openPane($, String((e as { args?: unknown }).args ?? '').trim()))
+
+  // デスクトップアプリの右クリックメニューから、引数なしの /actions-pane と同じことをする (上部のヘッダーには mod から足せない)
+  on('ui.render', { component: 'ContextMenu' }, ($, e) => {
+    const { Button, Text } = $.ui.resolve(e)
+    const press = async () => {
+      const r = await openPane($, '')
+      $.ui.toast(r.text)
     }
-    if (repo !== null && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
-      const since = sinceOf(await $.clock.now())
-      const add = repo
-      await update($, watched, list => [...list.filter(w => w.repo !== add), { repo: add, since }])
-    }
-    // connector が無くて止めた読みを再開する (connector を繋ぎ直した後に打つ)
-    await update($, wave, w => ({ ...w, stopped: false }))
-    await $.ui.open({ id: PANE, title: TITLE })
-    if (repo) return { text: `${repo} をパネルに足した` }
-    return { text: 'パネルを開いた (/actions-pane owner/repo で足せる)' }
+    return (
+      <Button key="actions-pane" onPress={press}>
+        GitHub Actions パネルを開く <Text dimColor>/actions-pane と同じ</Text>
+      </Button>
+    )
   })
 
   // PR を作ったら、その repo をその時刻からパネルに出す (gh pr create と pr-push.sh)
@@ -235,4 +227,27 @@ export const register: Register = (on, options) => {
       </Box>
     )
   })
+}
+
+/** /actions-pane の本体。arg が空なら、セッションの cwd の git remote (origin) から repo を引く */
+async function openPane($: EngineInterface, arg: string): Promise<{ text: string }> {
+  let repo: string | null = arg
+  if (arg === '') {
+    try {
+      const r = await $.process.run(['git', 'remote', 'get-url', 'origin'], { timeoutMs: 15000 })
+      repo = r.exitCode === 0 ? repoOfRemoteUrl(r.stdout) : null
+    } catch {
+      repo = null
+    }
+  }
+  if (repo !== null && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
+    const since = sinceOf(await $.clock.now())
+    const add = repo
+    await update($, watched, list => [...list.filter(w => w.repo !== add), { repo: add, since }])
+  }
+  // connector が無くて止めた読みを再開する (connector を繋ぎ直した後に打つ)
+  await update($, wave, w => ({ ...w, stopped: false }))
+  await $.ui.open({ id: PANE, title: TITLE })
+  if (repo) return { text: `${repo} をパネルに足した` }
+  return { text: 'パネルを開いた (/actions-pane owner/repo で足せる)' }
 }
